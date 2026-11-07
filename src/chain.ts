@@ -60,14 +60,27 @@ export class LiveChain implements Chain {
   }
 
   private async get (path: string, as: 'json' | 'text' = 'json'): Promise<any> {
-    const wait = 400 - (Date.now() - this.last) // stay under the free 3 requests/second limit
-    if (wait > 0) await sleep(wait)
-    this.last = Date.now()
     const headers: Record<string, string> = {}
     if (process.env.POK_WOC_KEY) headers.Authorization = process.env.POK_WOC_KEY
-    const res = await fetch(this.base + path, { headers })
-    if (!res.ok) throw new Error(`WhatsOnChain ${path} returned ${res.status}`)
-    return as === 'json' ? res.json() : res.text()
+    // Shared hosts such as Replit share outbound addresses, so the free rate limit can run out
+    // because of other people's traffic. A 429, a 5xx or a dropped connection is retried with a
+    // growing wait (about two and a half minutes in all); any other status is an answer.
+    const waits = [2, 5, 10, 20, 40, 60]
+    for (let attempt = 0; ; attempt++) {
+      const gap = 400 - (Date.now() - this.last) // stay under the free 3 requests/second limit
+      if (gap > 0) await sleep(gap)
+      this.last = Date.now()
+      let res: Response | undefined
+      let why = ''
+      try { res = await fetch(this.base + path, { headers }) } catch (e) { why = (e as Error).message }
+      if (res && res.ok) return as === 'json' ? res.json() : res.text()
+      const retryable = !res || res.status === 429 || res.status >= 500
+      if (!retryable || attempt >= waits.length) throw new Error(`WhatsOnChain ${path} returned ${res ? res.status : why}`)
+      const after = Number(res?.headers.get('retry-after'))
+      const secs = Number.isFinite(after) && after > 0 ? Math.min(after, 120) : waits[attempt]
+      process.stdout.write(`  WhatsOnChain ${res ? res.status : 'unreachable'}, retrying in ${secs} s…\n`)
+      await sleep(secs * 1000)
+    }
   }
 
   async tip (): Promise<Header> {
