@@ -168,8 +168,19 @@ async function send (tx: Transaction, record: (s: Sent) => void, label: string):
   console.log(`${label}: ${sent.txid} (${tx.toBinary().length} bytes, fee ${await tx.getFee()} sats)`)
   try {
     const r = await chain.broadcast(tx)
-    sent.status = r.ok ? 'accepted' : 'rejected'
-    sent.detail = r.detail
+    if (r.ok === null) {
+      // the reply was unreadable, so ask WhatsOnChain whether the network has the transaction
+      sent.detail = `ARC's reply could not be read (${r.detail}).`
+      if (await seenByWoc(sent.txid)) {
+        sent.status = 'accepted'
+        sent.detail += ' WhatsOnChain has the transaction, so the network accepted it.'
+      } else {
+        sent.detail += ' WhatsOnChain has not seen it yet. Run status in a minute.'
+      }
+    } else {
+      sent.status = r.ok ? 'accepted' : 'rejected'
+      sent.detail = r.detail
+    }
   } catch (e) {
     sent.detail = `no clear answer from the broadcaster: ${(e as Error).message}. Run rebroadcast.`
   }
@@ -180,6 +191,15 @@ async function send (tx: Transaction, record: (s: Sent) => void, label: string):
 }
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+/** WhatsOnChain can take a few seconds to index a new transaction, so look a few times. */
+async function seenByWoc (txid: string, tries = 5): Promise<boolean> {
+  for (let i = 0; i < tries; i++) {
+    if (await chain.getTx(txid).then(() => true, () => false)) return true
+    if (i < tries - 1) await sleep(3000)
+  }
+  return false
+}
 const when = (t: number) => new Date(t * 1000).toISOString().replace('.000Z', 'Z')
 
 // ---- commands ---------------------------------------------------------------------------------
@@ -356,11 +376,22 @@ async function status () {
   }
   for (const w of s.withdrawals) line('\nWithdrawal', w)
   if (!DRY) {
-    const pending = [s.funding, ...s.periods.map(p => p.spend), ...s.withdrawals].filter(x => x && x.status !== 'rejected') as Sent[]
-    for (const x of pending) {
+    // WhatsOnChain is the ground truth: a transaction it has seen was accepted by the network,
+    // whatever the broadcaster's reply said, so the record is corrected and saved.
+    const all = [s.funding, ...s.periods.map(p => p.spend), ...s.withdrawals].filter(Boolean) as Sent[]
+    let changed = false
+    console.log('')
+    for (const x of all) {
       const seen = await chain.getTx(x.txid).then(() => true, () => false)
       console.log(`${x.txid.slice(0, 12)}… ${seen ? 'seen by WhatsOnChain' : 'not seen by WhatsOnChain yet'}`)
+      if (seen && x.status !== 'accepted') {
+        console.log(`  was recorded as ${x.status}; now marked accepted`)
+        x.status = 'accepted'
+        x.detail = `${x.detail ? x.detail + ' ' : ''}Later found on WhatsOnChain, so marked accepted.`
+        changed = true
+      }
     }
+    if (changed) save(s)
   }
 }
 

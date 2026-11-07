@@ -14,7 +14,8 @@ export interface Chain {
   tip (): Promise<Header>
   header (height: number): Promise<Header>
   getTx (txid: string): Promise<Transaction>
-  broadcast (tx: Transaction): Promise<{ ok: boolean, txid: string, detail: string }>
+  /** ok is null when the broadcaster's reply could not be read: the outcome is unknown, not a rejection. */
+  broadcast (tx: Transaction): Promise<{ ok: boolean | null, txid: string, detail: string }>
 }
 
 /** Expand compact nBits to a full target. */
@@ -86,11 +87,14 @@ export class LiveChain implements Chain {
     return tx
   }
 
-  async broadcast (tx: Transaction): Promise<{ ok: boolean, txid: string, detail: string }> {
+  async broadcast (tx: Transaction): Promise<{ ok: boolean | null, txid: string, detail: string }> {
     const r = await this.broadcaster.broadcast(tx)
-    return r.status === 'success'
-      ? { ok: true, txid: r.txid, detail: r.message }
-      : { ok: false, txid: r.txid ?? tx.id('hex'), detail: `${r.code}: ${r.description}` }
+    if (r.status === 'success') return { ok: true, txid: r.txid, detail: r.message }
+    // @bsv/sdk 4.0.1 refuses replies whose fields it cannot validate, such as GorillaPool's
+    // "competingTxs": null, and reports them as ERR_INVALID_RESPONSE. That says nothing about
+    // whether ARC accepted the transaction, so it is returned as unknown.
+    if (r.code === 'ERR_INVALID_RESPONSE') return { ok: null, txid: tx.id('hex'), detail: `${r.code}: ${r.description}` }
+    return { ok: false, txid: r.txid ?? tx.id('hex'), detail: `${r.code}: ${r.description}` }
   }
 }
 
