@@ -10,7 +10,10 @@ const root = new URL('..', import.meta.url).pathname
 const source = readFileSync(join(root, 'src/script.ts'), 'utf8')
 
 const mutations: Array<[string, string, string]> = [
-  ['no keep window check', 'num(t.windowStart), num(t.windowEnd), op(OP.OP_WITHIN), op(OP.OP_VERIFY),', 'num(t.windowStart), num(t.windowEnd), op(OP.OP_2DROP), op(OP.OP_DROP),'],
+  ['no pinned-height check', 'push(hp), op(OP.OP_EQUALVERIFY), // its scriptSig opens with the pinned height', 'op(OP.OP_DROP), // its scriptSig opens with the pinned height'],
+  ['no coinbase input check', 'push(COINBASE_INPUT), op(OP.OP_EQUALVERIFY), // a coinbase', 'op(OP.OP_DROP), // a coinbase'],
+  ['coinbase not tied to the header', 'op(OP.OP_ROT), op(OP.OP_EQUALVERIFY) // [header]', 'op(OP.OP_ROT), op(OP.OP_2DROP) // [header]'],
+  ['coinbase path folded in the wrong order', 'op(OP.OP_CAT), op(OP.OP_HASH256), // the coinbase is always the left child', 'op(OP.OP_SWAP), op(OP.OP_CAT), op(OP.OP_HASH256), // the coinbase is always the left child'],
   ['no keep PoW floor', '...powCheck(t.keepTarget), op(OP.OP_TOALTSTACK)', 'op(OP.OP_TOALTSTACK)'],
   ['no operator signature', 'push(t.operatorKey), op(OP.OP_CHECKSIG)', 'op(OP.OP_DROP), op(OP.OP_1)'],
   ['no root comparison', 'out.push(op(OP.OP_DROP), push(t.root), op(OP.OP_EQUALVERIFY))', 'out.push(op(OP.OP_2DROP))'],

@@ -2,16 +2,19 @@
 //
 // One UTXO per (operator, period). Two spending paths:
 //
-//   KEEP   (selector 1): a header in [windowStart, windowEnd) meeting the PoW floor, m chunks at the
-//                        indices that header selects, each with its Merkle path to the deal root,
-//                        and the operator's signature.
+//   KEEP   (selector 1): the header of the block at the pinned height, proved by that block's
+//                        coinbase and its Merkle path, meeting the PoW floor; m chunks at the indices
+//                        that header selects, each with its Merkle path to the deal root; and the
+//                        operator's signature.
 //   LAPSE  (selector 0): a header with time >= lapseTime meeting the lapse floor, and the steward's
 //                        signature. Used to recover a period the operator failed to claim.
 //
 // The script reads no chain state. Unpredictability comes from the header hash; the cost of
-// forging a header that meets the floor is what bounds how much one period UTXO may hold.
+// forging a header that meets the floor is what bounds how much one period UTXO may hold. Pinning
+// the keep path to one height leaves the operator no choice of header, so no choice of challenge.
 import { LockingScript, UnlockingScript, OP } from '@bsv/sdk'
-import { Bytes, u32le } from './bytes.js'
+import { Bytes, u32le, concat } from './bytes.js'
+import { heightPush, COINBASE_INPUT } from './beacon.js'
 
 type Chunk = { op: number, data?: number[] }
 
@@ -52,8 +55,7 @@ export interface PeriodTerms {
   chunkCount: number   // N, leaves that may be challenged
   depth: number        // d, fixed path length
   samples: number      // m, chunks proven per claim
-  windowStart: number  // unix seconds, inclusive
-  windowEnd: number    // unix seconds, exclusive
+  height: number       // the block whose header the keep path must use
   keepTarget: bigint   // PoW floor for the keep path
   operatorKey: Bytes   // 33-byte compressed pubkey
   lapseTime: number    // unix seconds
@@ -68,6 +70,43 @@ const headerTime = (): Chunk[] => [
   num(4), op(OP.OP_SPLIT), op(OP.OP_DROP),
   ZERO_BYTE, op(OP.OP_CAT), op(OP.OP_BIN2NUM) // u32 time, kept positive past 2038
 ]
+
+/** Coinbase paths longer than this are refused: 2^32 transactions per block. */
+export const MAX_COINBASE_DEPTH = 32
+
+/**
+ * [coinbase path header] -> [header], failing unless the header is the block at `height`:
+ * the leaf is a coinbase (one input, null outpoint), its scriptSig opens with the BIP34 push of
+ * `height`, and its txid folds up the path (always as the left child) to the header's Merkle root.
+ */
+const pinnedHeader = (height: number): Chunk[] => {
+  const hp = heightPush(height)
+  const out: Chunk[] = [
+    op(OP.OP_SIZE), num(80), op(OP.OP_EQUALVERIFY),
+    op(OP.OP_DUP), num(36), op(OP.OP_SPLIT), op(OP.OP_NIP), num(32), op(OP.OP_SPLIT), op(OP.OP_DROP),
+    op(OP.OP_TOALTSTACK), op(OP.OP_TOALTSTACK), // alt: Merkle root, header
+    op(OP.OP_SWAP), // [path coinbase]
+    op(OP.OP_DUP), num(4), op(OP.OP_SPLIT), op(OP.OP_NIP), num(COINBASE_INPUT.length), op(OP.OP_SPLIT), op(OP.OP_DROP),
+    push(COINBASE_INPUT), op(OP.OP_EQUALVERIFY), // a coinbase: one input spending the null outpoint
+    op(OP.OP_DUP), num(42), op(OP.OP_SPLIT), op(OP.OP_NIP), num(hp.length), op(OP.OP_SPLIT), op(OP.OP_DROP),
+    push(hp), op(OP.OP_EQUALVERIFY), // its scriptSig opens with the pinned height
+    op(OP.OP_HASH256) // [path txid]
+  ]
+  for (let i = 0; i < MAX_COINBASE_DEPTH; i++) {
+    out.push(
+      op(OP.OP_OVER), op(OP.OP_SIZE), op(OP.OP_NIP), op(OP.OP_IF), // while siblings remain
+      op(OP.OP_SWAP), num(32), op(OP.OP_SPLIT), op(OP.OP_TOALTSTACK), // [cur sib], rest parked
+      op(OP.OP_CAT), op(OP.OP_HASH256), // the coinbase is always the left child
+      op(OP.OP_FROMALTSTACK), op(OP.OP_SWAP),
+      op(OP.OP_ENDIF)
+    )
+  }
+  out.push(
+    op(OP.OP_NIP), // anything left of the path cannot fold to the root, so it is simply dropped
+    op(OP.OP_FROMALTSTACK), op(OP.OP_FROMALTSTACK), op(OP.OP_ROT), op(OP.OP_EQUALVERIFY) // [header]
+  )
+  return out
+}
 
 /** [h] -> [h], failing unless LE(h) < target. */
 const powCheck = (target: bigint): Chunk[] => [
@@ -103,7 +142,7 @@ const challenge = (t: PeriodTerms, j: number): Chunk[] => {
 
 export function periodLockingScript (t: PeriodTerms): LockingScript {
   const keep: Chunk[] = [
-    ...headerTime(), num(t.windowStart), num(t.windowEnd), op(OP.OP_WITHIN), op(OP.OP_VERIFY),
+    ...pinnedHeader(t.height),
     op(OP.OP_HASH256), ...powCheck(t.keepTarget), op(OP.OP_TOALTSTACK)
   ]
   for (let j = 0; j < t.samples; j++) keep.push(...challenge(t, j))
@@ -119,15 +158,18 @@ export function periodLockingScript (t: PeriodTerms): LockingScript {
 
 export interface Proof { chunk: Bytes, siblings: Bytes[] } // siblings from leaf level upward
 
+/** The pinned block: its header, its coinbase, and the coinbase's Merkle path (siblings, leaf upward). */
+export interface PinnedBlock { header: Bytes, coinbase: Bytes, path: Bytes[] }
+
 /** Unlocking script for the keep path. Proofs are in challenge order j = 0..m-1. */
-export function keepUnlockingScript (sig: Bytes, header: Bytes, proofs: Proof[]): UnlockingScript {
+export function keepUnlockingScript (sig: Bytes, block: PinnedBlock, proofs: Proof[]): UnlockingScript {
   const chunks: Chunk[] = [push(sig)]
   for (let j = proofs.length - 1; j >= 0; j--) {
     const p = proofs[j]
     for (let lvl = p.siblings.length - 1; lvl >= 0; lvl--) chunks.push(push(p.siblings[lvl]))
     chunks.push(push(p.chunk))
   }
-  chunks.push(push(header), num(1))
+  chunks.push(push(block.coinbase), push(concat(...block.path)), push(block.header), num(1))
   return new UnlockingScript(chunks)
 }
 

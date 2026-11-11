@@ -1,13 +1,13 @@
 // Proof of Keep mainnet test.
 //
 // Funds one small development deal (env byte 0x00) that stores the white paper, then:
-//   period A: the operator claims it through the keep path with a real block header
+//   period A: the operator claims it through the keep path, using the block it is pinned to
 //   period B: nobody claims it, and the steward sweeps it through the lapse path
 // Every payment comes back to the same low-float address, and `withdraw` returns the lot.
 //
 //   npm run mainnet -- setup                 make or show the test key and address
 //   npm run mainnet -- fund <txid>           build and broadcast the deal from a payment to that address
-//   npm run mainnet -- claim                 wait for a block in A's window, then claim A
+//   npm run mainnet -- claim                 wait for the block A is pinned to, then claim A
 //   npm run mainnet -- sweep [A|B]           wait for the lapse time, then sweep (default B)
 //   npm run mainnet -- status                where everything stands
 //   npm run mainnet -- rebroadcast           resend anything stored but not yet accepted
@@ -21,7 +21,7 @@ import { join } from 'node:path'
 import { Bytes, sha256, toHex, fromHex, u32le } from './bytes.js'
 import { encode } from './erasure.js'
 import { FileTree } from './merkle.js'
-import { challengeIndices, meetsTarget } from './beacon.js'
+import { challengeIndices, meetsTarget, coinbaseHeight } from './beacon.js'
 import { PeriodTerms, periodLockingScript, keepUnlockingScript, lapseUnlockingScript, push, Proof } from './script.js'
 import { Chain, LiveChain, DryChain, Header, bitsToTarget, headerBits, easierBy } from './chain.js'
 
@@ -75,13 +75,13 @@ const need = (): State => {
 
 const termsOut = (t: PeriodTerms): Record<string, string | number> => ({
   root: toHex(t.root), chunkCount: t.chunkCount, depth: t.depth, samples: t.samples,
-  windowStart: t.windowStart, windowEnd: t.windowEnd, keepTarget: t.keepTarget.toString(16),
+  height: t.height, keepTarget: t.keepTarget.toString(16),
   operatorKey: toHex(t.operatorKey), lapseTime: t.lapseTime, lapseTarget: t.lapseTarget.toString(16),
   stewardKey: toHex(t.stewardKey)
 })
 const termsIn = (r: Record<string, string | number>): PeriodTerms => ({
   root: fromHex(r.root as string), chunkCount: r.chunkCount as number, depth: r.depth as number,
-  samples: r.samples as number, windowStart: r.windowStart as number, windowEnd: r.windowEnd as number,
+  samples: r.samples as number, height: (r.height ?? -1) as number, // -1: a deal made before periods were pinned
   keepTarget: BigInt('0x' + r.keepTarget), operatorKey: fromHex(r.operatorKey as string),
   lapseTime: r.lapseTime as number, lapseTarget: BigInt('0x' + r.lapseTarget), stewardKey: fromHex(r.stewardKey as string)
 })
@@ -218,7 +218,7 @@ async function setup () {
 }
 
 async function fund (txidArg?: string) {
-  if (load()?.funding) throw new Error(`A deal already exists in ${DIR}. Run status.`)
+  if (load()?.funding) throw new Error(`A deal already exists in ${DIR}. Run status, or move it aside to start another: mv ${DIR} ${DIR}-old`)
   const { root, operator, steward } = keys()
   let txid = txidArg
   if (DRY && !txid) {
@@ -243,17 +243,17 @@ async function fund (txidArg?: string) {
   mkdirSync(DIR, { recursive: true }); writeFileSync(FILE_COPY, Buffer.from(bytes))
   const fileInfo = { name: DEAL_FILE, length: bytes.length, sha256: toHex(sha256(bytes)), chunkSize, k, n, root: toHex(tree.root) }
 
-  // the windows start just after the current tip, so only a block mined after funding can claim
+  // both periods are pinned to the next block, so the challenge is unknown when the deal is built
   const tip = await chain.tip()
   const target = bitsToTarget(headerBits(tip.bytes))
-  const S = tip.time + 1
+  const S = tip.time + 1, next = tip.height + 1
   const common = {
     root: tree.root, chunkCount: tree.count, depth: tree.depth, samples: SAMPLES,
     keepTarget: easierBy(target, KEEP_FLOOR), lapseTarget: easierBy(target, LAPSE_FLOOR),
     operatorKey: operator.toPublicKey().encode(true) as Bytes, stewardKey: steward.toPublicKey().encode(true) as Bytes
   }
-  const A: PeriodTerms = { ...common, windowStart: S, windowEnd: S + 3 * HOUR, lapseTime: S + 6 * HOUR }
-  const B: PeriodTerms = { ...common, windowStart: S, windowEnd: S + HOUR / 2, lapseTime: S + HOUR }
+  const A: PeriodTerms = { ...common, height: next, lapseTime: S + 6 * HOUR }
+  const B: PeriodTerms = { ...common, height: next, lapseTime: S + HOUR }
 
   const tx = new Transaction()
   for (const { i } of outs) tx.addInput({ sourceTransaction: source, sourceOutputIndex: i, sequence: 0xffffffff, unlockingScriptTemplate: new P2PKH().unlock(root) })
@@ -277,7 +277,7 @@ async function fund (txidArg?: string) {
   console.log(`Period scripts: ${periodLockingScript(A).toBinary().length} bytes each`)
   await send(tx, sent => { state.funding = { ...sent, sourceTxid: txid! }; save(state) }, 'Funding')
   if (state.funding?.status === 'accepted') {
-    console.log(`\nA: claim window ${when(A.windowStart)} to ${when(A.windowEnd)}. Next: npm run mainnet -- claim${DRY ? ' --dry-run' : ''}`)
+    console.log(`\nA: pinned to block ${A.height}; claim it once that block is mined. Next: npm run mainnet -- claim${DRY ? ' --dry-run' : ''}`)
     console.log(`B: steward can sweep from ${when(B.lapseTime)}. Then: npm run mainnet -- sweep B${DRY ? ' --dry-run' : ''}`)
   }
 }
@@ -293,6 +293,17 @@ async function findHeader (pick: (h: Header) => boolean, from: number, until: nu
     if (DRY) { (chain as DryChain).mine(mineAt(tip)); continue }
     if (Date.now() / 1000 > until) throw new Error('No qualifying block appeared in time.')
     process.stdout.write(`  ${new Date().toISOString().slice(11, 19)} tip ${tip.height} at ${when(tip.time)}, waiting…\n`)
+    await sleep(60_000)
+  }
+}
+
+/** Wait until the block at `height` exists and return its header (the dry run mines up to it). */
+async function waitForHeight (height: number): Promise<Header> {
+  for (;;) {
+    const tip = await chain.tip()
+    if (tip.height >= height) return tip.height === height ? tip : chain.header(height)
+    if (DRY) { (chain as DryChain).mine(tip.time + 600); continue }
+    process.stdout.write(`  ${new Date().toISOString().slice(11, 19)} tip ${tip.height} at ${when(tip.time)}, waiting for ${height}…\n`)
     await sleep(60_000)
   }
 }
@@ -313,11 +324,13 @@ async function claim () {
   const { chunks, tree } = chunksOf([...readFileSync(FILE_COPY)])
   if (toHex(tree.root) !== toHex(t.root)) throw new Error('The stored file no longer matches the deal root')
 
-  console.log(`Looking for a block with a timestamp in ${when(t.windowStart)} to ${when(t.windowEnd)}…`)
-  const header = await findHeader(
-    h => h.time >= t.windowStart && h.time < t.windowEnd && meetsTarget(h.bytes, t.keepTarget),
-    s.fundedAtHeight + 1, t.windowEnd + 2 * HOUR, tip => Math.max(t.windowStart, tip.time + 1))
-  console.log(`Using block ${header.height} (${header.hash}), time ${when(header.time)}`)
+  if (t.height < 0) throw new Error('This deal was made before periods were pinned to block heights. Move it aside (mv .pok-mainnet .pok-mainnet-old) and fund a new one.')
+  console.log(`Period A is pinned to block ${t.height}. Waiting for it…`)
+  const header = await waitForHeight(t.height)
+  if (!meetsTarget(header.bytes, t.keepTarget)) throw new Error(`Block ${t.height} is below the deal's floor, so period A cannot be claimed. The steward can sweep it after ${when(t.lapseTime)}.`)
+  const block = await chain.coinbaseProof(t.height)
+  if (coinbaseHeight(block.coinbase) !== t.height) throw new Error(`The coinbase fetched for block ${t.height} does not record that height`)
+  console.log(`Using block ${header.height} (${header.hash}), time ${when(header.time)}; coinbase path ${block.path.length} levels`)
 
   const proofs: Proof[] = challengeIndices(header.bytes, tree.root, tree.count, t.samples)
     .map(i => ({ chunk: chunks[i], siblings: tree.path(i) }))
@@ -325,7 +338,7 @@ async function claim () {
   const out = funding.outputs[p.vout]
   const tx = new Transaction()
   tx.addInput({ sourceTransaction: funding, sourceOutputIndex: p.vout, sequence: 0xffffffff,
-    unlockingScriptTemplate: wrapSig(operator, out, sig => keepUnlockingScript(sig, header.bytes, proofs)) })
+    unlockingScriptTemplate: wrapSig(operator, out, sig => keepUnlockingScript(sig, { header: header.bytes, coinbase: block.coinbase, path: block.path }, proofs)) })
   tx.addOutput({ lockingScript: payBack(root), change: true })
   await tx.fee(feeModel)
   await tx.sign()
@@ -371,7 +384,8 @@ async function status () {
   for (const p of s.periods) {
     const t = termsIn(p.terms)
     console.log(`\nPeriod ${p.label} (${p.sats} sats): ${p.purpose}`)
-    console.log(`  window ${when(t.windowStart)} to ${when(t.windowEnd)}, lapse ${when(t.lapseTime)}${now >= t.lapseTime ? ' (open now)' : ''}`)
+    const keep = t.height >= 0 ? `pinned to block ${t.height}` : `window ${when(p.terms.windowStart as number)} to ${when(p.terms.windowEnd as number)}`
+    console.log(`  ${keep}, lapse ${when(t.lapseTime)}${now >= t.lapseTime ? ' (open now)' : ''}`)
     line(`  ${p.spend ? p.spend.path : 'spend'}`, p.spend)
   }
   for (const w of s.withdrawals) line('\nWithdrawal', w)

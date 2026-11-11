@@ -39,7 +39,7 @@ console.log(`Chance a 49% holder passes using only the ~36 real headers in a 6h 
 // ---- 3. script and claim sizes ------------------------------------------------------------
 const fakeTerms = (depth: number, samples: number): PeriodTerms => ({
   root: new Array(32).fill(7), chunkCount: 2 ** depth - 1, depth, samples,
-  windowStart: 2000000000, windowEnd: 2000021600, keepTarget: 1n << 230n,
+  height: 1_000_000, keepTarget: 1n << 230n,
   operatorKey: [2, ...new Array(32).fill(9)], lapseTime: 2001231200, lapseTarget: 1n << 234n,
   stewardKey: [3, ...new Array(32).fill(8)]
 })
@@ -47,7 +47,8 @@ console.log('\nChunk size | max raw file per deal (65,535 chunks, rate 1/2) | lo
 for (const chunk of [4096, 65536, 262144, 524288]) {
   const d = 16, m = 16
   const lock = periodLockingScript(fakeTerms(d, m)).toBinary().length
-  const unlock = 74 + m * (chunk + 5 + d * 33) + 81 + 1
+  const pinned = 3 + 300 + 3 + 20 * 32 // the pinned block's coinbase (about 300 B) and a 20-level path (a million-transaction block)
+  const unlock = 74 + m * (chunk + 5 + d * 33) + pinned + 81 + 1
   const claim = 10 + 32 + 4 + 5 + unlock + 4 + 1 + 8 + 26 + 4
   const maxRaw = 65535 * chunk / ERASURE_OVERHEAD
   console.log(`${chunk / 1024} KiB | ${(maxRaw / 2 ** 30).toFixed(2)} GiB | ${lock} B | ${(claim / 1e3).toFixed(0)} kB | ${Math.ceil(claim / 1000 * FEE_SAT_PER_KB)} sat`)

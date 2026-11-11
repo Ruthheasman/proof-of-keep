@@ -2,7 +2,7 @@
 
 ### Paying for storage you can check, enforced by BSV script
 
-Ruth Heasman · Draft 0.2 · 6 November 2026 (first draft 29 October 2026)
+Ruth Heasman · Draft 0.3 · 11 November 2026 (first draft 29 October 2026)
 
 ---
 
@@ -10,9 +10,9 @@ Ruth Heasman · Draft 0.2 · 6 November 2026 (first draft 29 October 2026)
 
 BSV can prove that a piece of data existed at a given time, cheaply and indefinitely: a transaction, its Merkle path and the block headers are enough. That proof is only useful while someone still has the data. Nodes prune, free indexers are planning to cover less history, and hosting that is paid upfront ends when the payment runs out. So the question is how to pay someone to keep a file for fifty years without trusting them, or anyone else, to hold the money or report honestly.
 
-Proof of Keep answers it with an ordinary output script. At the start of a deal the whole storage fee is locked on-chain as a schedule of UTXOs, one per operator per period. Each UTXO pays out only to its operator, and only when they present a set of randomly chosen chunks of the file with Merkle paths to the deal's root. The choice of chunks is derived from a block header from that period, which the script checks against a proof-of-work floor, so nobody can know the challenge in advance without paying for the work. Periods an operator fails to claim lapse to a steward, who pays a replacement from the remaining copies. It is designed to be the on-chain payment output that bstore, a storage market on BSV, reserves but does not yet define (section 2.1).
+Proof of Keep answers it with an ordinary output script. At the start of a deal the whole storage fee is locked on-chain as a schedule of UTXOs, one per operator per period. Each UTXO pays out only to its operator, and only when they present a set of randomly chosen chunks of the file with Merkle paths to the deal's root. The choice of chunks is derived from the header of the block at a height fixed for that period, which the script checks against a proof-of-work floor, so nobody can know the challenge in advance without paying for the work. Periods an operator fails to claim lapse to a steward, who pays a replacement from the remaining copies. It is designed to be the on-chain payment output that bstore, a storage market on BSV, reserves but does not yet define (section 2.1).
 
-A working prototype runs every rule through the `@bsv/sdk` script interpreter: 27 checks pass and 10 deliberate mutations of the script are all caught. At cold-storage prices, keeping 1 GiB for fifty years costs about $7 with three full copies, or about $2 if the file is split across five operators so that any three of them can rebuild it. The on-chain fees over a whole deal come to well under a dollar.
+A working prototype runs every rule through the `@bsv/sdk` script interpreter: 34 checks pass and 13 deliberate mutations of the script are all caught. A claim through the keep path has been mined on BSV mainnet. At cold-storage prices, keeping 1 GiB for fifty years costs about $7 with three full copies, or about $2 if the file is split across five operators so that any three of them can rebuild it. The on-chain fees over a whole deal come to well under a dollar.
 
 Proof of Keep does not prove that three operators hold three independent copies, it carries BSV price risk, and version 1 leaves a large footprint in the UTXO set. Section 8 covers each.
 
@@ -68,13 +68,13 @@ bstore is the market and the plumbing: provider software, an S3 gateway, bucket 
 
 Proof of Keep is a working, tested form of that output. It adds three things the sketch leaves open:
 
-1. **A limit on what one output may hold** (section 5.2). One window's total payment must stay under the cost of forging one header at the floor. Without that limit, a challenge seeded by a header can be bought ahead of time.
-2. **Erasure coding, which makes the on-chain form affordable.** bstore spot-checks full copies, so it needs about 1,000 samples to catch one missing blob of a 1 GiB object. That is cheap off-chain. In script, a 1,024-sample claim over bstore's 4 KiB segments needs a 427 kB locking script per period and a 4.8 MB claim (measured with this paper's script builder at the depth of 18 that a 1 GiB object needs). With rate-1/2 coding, data is lost only when more than half the chunks are gone, so 16 samples are enough: a 6.3 kB locking script and, at 64 KiB chunks, a 1.06 MB claim.
+1. **A limit on what one output may hold** (section 5.2). One period's total payment must stay under the cost of forging one header at the floor. Without that limit, a challenge seeded by a header can be bought ahead of time.
+2. **Erasure coding, which makes the on-chain form affordable.** bstore spot-checks full copies, so it needs about 1,000 samples to catch one missing blob of a 1 GiB object. That is cheap off-chain. In script, a 1,024-sample claim over bstore's 4 KiB segments needs a 427 kB locking script per period and a 4.8 MB claim (measured with this paper's script builder at the depth of 18 that a 1 GiB object needs). With rate-1/2 coding, data is lost only when more than half the chunks are gone, so 16 samples are enough: a 6.8 kB locking script and, at 64 KiB chunks, a 1.06 MB claim.
 3. **A prepaid schedule with recovery:** decades of payments fixed at funding time, a lapse path for missed periods, and shards across operators (section 4.10).
 
-The two use different proof formats. bstore's proof root is an RFC 6962 tree over the object's raw 4 KiB segments, so path lengths vary. Proof of Keep's is a fixed-depth, padded tree over erasure-coded chunks. Joining them needs a second bstore proof profile over encoded chunks. That is a change to bstore's specification, not to either design's security argument.
+The two trees are closer than they look. bstore's proof root is an RFC 6962 tree over an object's 4 KiB segments; Proof of Keep's is a fixed-depth, padded tree over erasure-coded chunks. Both hash a leaf as `SHA-256(0x00 || data)` and a node as `SHA-256(0x01 || left || right)`, so when the number of leaves is a power of two they are the same tree. bstore froze its proof formats so that a later output could pay on proof without a new format (its section 7.7), and that looks achievable: store the erasure-coded encoding as an ordinary bstore object and challenge it with bstore's own profile and index formula, with 16 samples per Reed-Solomon codeword. The details are a proposal to bstore's maintainers (section 9), not settled.
 
-bstore's signed clarification C12 also sets a rule this paper adopts: an on-chain form must not let the prover choose which segments it is asked for. Version 1 of Proof of Keep falls short of that rule, because an operator can choose among the real headers in a window (section 5.3). Pinning each period to one block height, proved by a Merkle path to that block's coinbase transaction as bstore's section 7.7 suggests, removes the choice. Section 9 lists it as the first change to the script.
+bstore's signed clarification C12 says a later on-chain form must not let the prover supply or choose among nonces, because the prover would then choose which segments it is asked for. That reason applies equally to choosing among headers. Draft 0.2 of this paper fell short of it, because an operator could pick any real header in a six-hour window. Since draft 0.3, each period is pinned to one block height, proved by a Merkle path from that block's coinbase transaction, as bstore's section 7.7 describes, so the operator has no choice of header (sections 4.6 and 5.3).
 
 ---
 
@@ -94,7 +94,7 @@ flowchart LR
   B --> C[Build file tree, root R]
   C --> D[Fund schedule: one UTXO per operator per period]
   D --> E{Each period}
-  E -->|header in window| F[Operator proves m chunks, claims]
+  E -->|pinned block mined| F[Operator proves m chunks, claims]
   E -->|no claim by lapse time| G[Steward sweeps, pays replacement]
   G --> H[Replacement copies from surviving operators]
   H --> E
@@ -102,8 +102,8 @@ flowchart LR
 
 1. **Prepare.** The depositor encrypts the file if it is private, erasure-codes it so that any half of the chunks rebuild it, and splits it into fixed-size chunks.
 2. **Commit.** The chunks become the leaves of a fixed-depth Merkle tree with root R.
-3. **Fund.** The depositor creates the period UTXOs, each carrying R, the period's challenge window, a proof-of-work floor, the operator's key and the steward's key. The money is now held by script, not by anyone.
-4. **Claim.** When a block with a timestamp inside the window appears, its header selects m chunk positions. The operator spends that period's UTXO by supplying the header, the m chunks, their Merkle paths and a signature.
+3. **Fund.** The depositor creates the period UTXOs, each carrying R, the block height the period is pinned to, a proof-of-work floor, the operator's key and the steward's key. The money is now held by script, not by anyone.
+4. **Claim.** When the block at the pinned height is mined, its header selects m chunk positions. The operator spends that period's UTXO by supplying the header, that block's coinbase transaction and its Merkle path, the m chunks, their Merkle paths and a signature.
 5. **Lapse.** If a period is not claimed by its lapse time, the steward spends it instead and uses the funds to bring in a replacement, who copies the data from the surviving operators.
 6. **Read.** Retrieval is separate and paid per request (section 4.9).
 
@@ -173,10 +173,10 @@ Each period UTXO's locking script embeds:
 | `chunkCount` | N, the number of chunks in this operator's tree | |
 | `depth` | d | |
 | `samples` | m, chunks proven per claim | 16 |
-| `windowStart`, `windowEnd` | Unix seconds; a qualifying header's timestamp must fall in `[start, end)` | 6-hour window |
+| `height` | The block whose header the keep path must use | the previous period's height plus 4,320 (30 days at 144 blocks a day) |
 | `keepTarget` | Proof-of-work floor for the keep path | target at 1/64 of the difficulty at deal creation |
 | `operatorKey` | 33-byte compressed public key | |
-| `lapseTime` | Earliest header timestamp for the lapse path | `windowEnd` + 14 days |
+| `lapseTime` | Earliest header timestamp for the lapse path | the pinned block's expected time + 14 days |
 | `lapseTarget` | Proof-of-work floor for the lapse path | target at 1/1024 of the difficulty at deal creation |
 | `stewardKey` | 33-byte compressed public key | |
 
@@ -184,7 +184,7 @@ Periods default to monthly. Section 5.2 explains why the period length must shri
 
 ### 4.5 Deriving the challenge
 
-For a header `hdr` and j = 0 … m − 1:
+For the header `hdr` of the pinned block and j = 0 … m − 1:
 
 ```
 seed_j  = SHA256( H256(hdr) || R || u32le(j) )
@@ -195,15 +195,41 @@ index_j = LE(seed_j) mod N
 
 ### 4.6 The keep path
 
-The operator's unlocking script pushes, bottom to top: their signature; for each challenge j from m − 1 down to 0, the siblings from level d − 1 down to level 0 followed by `chunk_j`; the header; then `1` to select the keep path.
+The operator's unlocking script pushes, bottom to top: their signature; for each challenge j from m − 1 down to 0, the siblings from level d − 1 down to level 0 followed by `chunk_j`; the pinned block's coinbase transaction; that coinbase's Merkle path, its sibling hashes from the leaf upward joined into one push; the block's header; then `1` to select the keep path.
 
 The locking script checks, in order:
 
 1. The header is exactly 80 bytes.
-2. Its timestamp, bytes 68 to 71 read as an unsigned 32-bit integer, is in `[windowStart, windowEnd)`. A zero byte is appended before conversion so timestamps after 2038 stay positive.
-3. `LE(H256(header)) < keepTarget`.
-4. For each j: `index_j` is derived from the header as in 4.5, the chunk is hashed to a leaf, and the path is folded up d levels. At each level the low bit of the running index decides whether the current node is the left or right child. The result must equal R.
-5. The operator's signature is valid for the spending transaction.
+2. The coinbase is a coinbase: bytes 4 to 40 are one input spending the null outpoint (`0x01`, 32 zero bytes, `ffffffff`).
+3. Its scriptSig, from byte 42, opens with the push of `height` that BIP34 requires of every coinbase.
+4. `H256(coinbase)`, folded up the path as the left child at every level (the coinbase is always transaction 0), equals the header's Merkle root, bytes 36 to 67. The fold is unrolled for up to 32 levels, enough for 2^32 transactions in a block.
+5. `LE(H256(header)) < keepTarget`.
+6. For each j: `index_j` is derived from the header as in 4.5, the chunk is hashed to a leaf, and the path is folded up d levels. At each level the low bit of the running index decides whether the current node is the left or right child. The result must equal R.
+7. The operator's signature is valid for the spending transaction.
+
+Checks 2 to 4 pin the header to one block. BIP34 makes the height in the coinbase a consensus rule, so a real header from any other height fails check 3 or 4. A forged block can claim any height, but it still has to meet the floor in check 5, so the cost argument of section 5.2 is unchanged. The pinning adds about 500 bytes to each period script and, for a block of a million transactions, about 950 bytes to each claim.
+
+The pinning, with comments:
+
+```
+# [coinbase path header] on the stack
+SIZE 80 EQUALVERIFY
+DUP 36 SPLIT NIP 32 SPLIT DROP             # the header's Merkle root
+TOALTSTACK TOALTSTACK SWAP                 # park root and header; [path coinbase]
+DUP 4 SPLIT NIP 37 SPLIT DROP
+<01 00..00 ffffffff> EQUALVERIFY           # one input, spending the null outpoint
+DUP 42 SPLIT NIP <len> SPLIT DROP
+<BIP34 push of height> EQUALVERIFY         # the coinbase records the pinned height
+HASH256                                    # its txid
+# repeated 32 times:
+OVER SIZE NIP IF                           # while siblings remain
+  SWAP 32 SPLIT TOALTSTACK                 # take the next sibling
+  CAT HASH256                              # node = H256(current || sibling)
+  FROMALTSTACK SWAP
+ENDIF
+# then:
+NIP FROMALTSTACK FROMALTSTACK ROT EQUALVERIFY   # equals the header's Merkle root
+```
 
 Each challenge in script, with comments:
 
@@ -230,7 +256,7 @@ The steward pushes a signature, a header and `0`. The script checks that the hea
 
 ### 4.8 Running a deal
 
-**Operators** watch for the first header whose timestamp enters each window. On average one appears within ten minutes of `windowStart`, and a 6-hour window contains about 36. The operator computes the indices, builds the claim and broadcasts it. They should claim promptly, because once `lapseTime` passes the steward can sweep the same UTXO. The claim transaction pays its own fee out of the period's value.
+**Operators** watch for the block at each period's pinned height. At 144 blocks a day, a 4,320-block period averages 30 days, give or take a few hours. The operator fetches that block's header, its coinbase transaction and the coinbase's Merkle path, computes the indices, builds the claim and broadcasts it. If the pinned block happens to fall below the floor, which needs a 64-fold drop in difficulty, the period cannot be claimed and lapses. They should claim promptly, because once `lapseTime` passes the steward can sweep the same UTXO. The claim transaction pays its own fee out of the period's value.
 
 **The steward** indexes the deal's period UTXOs. A UTXO spent through the keep path is a passed period. One still unspent at `lapseTime` is a missed period. On a miss the steward sweeps it, and if an operator misses twice in a row, the steward hires a replacement: the replacement copies the encoded file from a surviving operator (a paid read, 4.9), or with shards rebuilds the missing shard as in 4.10, checks it against the root, and is funded with new period UTXOs. The failed operator's remaining UTXOs stay locked to their key. If they recover the data they can still claim them; otherwise each one lapses to the steward in turn and pays for the replacement's periods. To cover the gap before those lapses arrive, the depositor funds a repair reserve, 10% of the deal value by default, held by the steward.
 
@@ -255,7 +281,7 @@ A deal can instead split the file into shards. The depositor encodes it once, so
 
 For 1 GiB over fifty years at the cold tier with a 2× margin:
 
-| Layout | Total stored | Operator losses survived | Cost | Largest deal the per-window cap allows, monthly windows |
+| Layout | Total stored | Operator losses survived | Cost | Largest deal the per-period cap allows, monthly periods |
 |---|---|---|---|---|
 | Full copies, 3 operators | 6× | 2 | $7.13 | 18 GiB |
 | Shards, any 2 of 3 | 1.5× | 1 | $1.78 | 73 GiB |
@@ -281,7 +307,7 @@ What changes with shards:
 
 Using only words that describe events:
 
-> Between `windowStart` and the time the claim was mined, someone holding the operator's key produced m chunks at positions chosen by a block header that met the deal's proof-of-work floor, and every chunk was included in the tree with root R.
+> Before the claim was mined, someone holding the operator's key produced m chunks at positions chosen by a block header that met the deal's proof-of-work floor and whose block's coinbase recorded the pinned height, and every chunk was included in the tree with root R.
 
 It does not show that the operator held the data continuously, that the copy is independent of the other operators' copies, that the operator will serve it, or that the data is true. The rest of this section is about how hard it is to produce that claim without holding the data.
 
@@ -289,7 +315,7 @@ The threat model has four parties: an operator who wants payment without storing
 
 ### 5.2 Forging headers to claim ahead of time
 
-The cheapest attack does not involve losing data. An operator who holds the file now forges one header for each future window, each with a timestamp in that window and a hash under the floor, claims every future period today, and then deletes the file.
+The cheapest attack does not involve losing data. An operator who holds the file now forges one block for each future period, each with a coinbase recording that period's pinned height and a header hash under the floor, claims every future period today, and then deletes the file.
 
 Each forged header costs the work needed to meet the floor. At the current difficulty one real header costs about one block subsidy: 3.125 BSV, or roughly $55 at $17.70 (29 October 2026, height 973,175, difficulty 32.34 × 10⁹). A floor at a fraction 1/F of the current difficulty costs about 1/F of that:
 
@@ -303,11 +329,11 @@ Each forged header costs the work needed to meet the floor. At the current diffi
 
 The attack pays when one period's payment exceeds the cost of forging one header. That gives the rule that sizes every deal:
 
-> **One window's total payment, across all of a deal's operators, must be less than the cost of forging one header at the floor.** Version 1 applies a safety factor of 4.
+> **One period's total payment, across all of a deal's operators, must be less than the cost of forging one header at the floor.** Version 1 applies a safety factor of 4.
 
-The cap covers the whole deal rather than each operator because one forged header works for every UTXO in that window. Splitting a payment across several UTXOs does not help, and one party holding several operator keys (section 5.5) can claim all of them with the same header.
+The cap covers the whole deal rather than each operator because one forged header works for every UTXO pinned to that height. Splitting a payment across several UTXOs does not help, and one party holding several operator keys (section 5.5) can claim all of them with the same header.
 
-This is the sCrypt rule restated for a payment schedule. With the default floor and the safety factor, the cap is $0.22 per window for the deal, or $0.07 for each of three operators. At cold-storage prices that limits a full-copy deal to about 18 GiB with monthly windows, 79 GiB with weekly and 554 GiB with daily. A 3-of-5 shard deal stores less, so it pays less per window and fits about 65 GiB with monthly windows. Larger deals use shorter periods. The estimate of forging cost assumes the price of hashing roughly matches BSV mining revenue; the safety factor is there because it might not.
+This is the sCrypt rule restated for a payment schedule. With the default floor and the safety factor, the cap is $0.22 per period for the deal, or $0.07 for each of three operators. At cold-storage prices that limits a full-copy deal to about 18 GiB with monthly periods, 79 GiB with weekly and 554 GiB with daily. A 3-of-5 shard deal stores less, so it pays less per period and fits about 65 GiB with monthly periods. Larger deals use shorter periods. The estimate of forging cost assumes the price of hashing roughly matches BSV mining revenue; the safety factor is there because it might not.
 
 ### 5.3 Keeping part of the file
 
@@ -320,9 +346,9 @@ An operator who deletes some chunks fails any challenge that lands on one of the
 | 16 (default) | 90,500 | $78,254 |
 | 24 | 27,200,000 | $23.5 million |
 
-Each of those passes earns at most one window's payment, which section 5.2 caps at $0.22.
+Each of those passes earns at most one period's payment, which section 5.2 caps at $0.22.
 
-The operator also gets a free choice among the real headers in each window, about 36 in six hours. With m = 16, an operator holding 49% passes a window using real headers alone with probability 0.04%, so over a 600-period deal they would collect about one payment in 2,500. The prototype measured this rate directly with a smaller m (section 7). Pinning each period to one block height removes the choice altogether (sections 2.1 and 8).
+The operator gets no choice of header, because each period is pinned to one block height. The one exception is a short fork: if two competing blocks are found at the pinned height, either header passes, which at most doubles the operator's chance for that period. Draft 0.2 selected headers by timestamp, which gave a choice of about 36 real headers per six-hour window and let a 49% holder pass about one period in 2,500 with m = 16. The prototype measured that rate directly with a smaller m (section 7).
 
 Holding more than half but not all the chunks is not data loss, because the file is still recoverable, but such an operator fails some claims and will be replaced as their misses add up.
 
@@ -387,21 +413,21 @@ Chunk size sets both the largest file one deal can hold and the size of each cla
 
 | Chunk size | Largest file per full-copy deal | Claim transaction | Claim fee at 1 sat/kB |
 |---|---|---|---|
-| 4 KiB | 0.12 GiB | 74 kB | 75 sats |
-| 64 KiB | 2 GiB | 1.06 MB | 1,058 sats |
-| 256 KiB | 8 GiB | 4.2 MB | 4,204 sats |
-| 512 KiB | 16 GiB | 8.4 MB | 8,398 sats |
+| 4 KiB | 0.12 GiB | 75 kB | 76 sats |
+| 64 KiB | 2 GiB | 1.06 MB | 1,059 sats |
+| 256 KiB | 8 GiB | 4.2 MB | 4,205 sats |
+| 512 KiB | 16 GiB | 8.4 MB | 8,399 sats |
 
-The period locking script is 6,301 bytes at depth 16 with 16 samples. With 3-of-5 shards the largest file per deal at 64 KiB chunks is 2.4 GiB, since the 65,535-chunk limit covers all five shards together.
+The period locking script is 6,804 bytes at depth 16 with 16 samples, including the height pinning. With 3-of-5 shards the largest file per deal at 64 KiB chunks is 2.4 GiB, since the 65,535-chunk limit covers all five shards together.
 
-For 1 GiB with three full copies, 64 KiB chunks, monthly windows and fifty years:
+For 1 GiB with three full copies, 64 KiB chunks, monthly periods and fifty years:
 
 | Item | Amount |
 |---|---|
 | Period UTXOs | 1,800 |
-| Funding transactions | 11.4 MB in total, split into one per operator to stay under 10 MB; 11,364 sats |
+| Funding transactions | 12.3 MB in total, split into one per operator to stay under 10 MB; 12,269 sats |
 | Claim fees over the deal | 1.9 million sats, about $0.34 |
-| UTXO set footprint at the start | up to 11.3 MB |
+| UTXO set footprint at the start | up to 12.2 MB |
 
 A 3-of-5 shard deal of the same size makes 3,000 claims of about 1.06 MB, costing about 3.2 million sats or $0.56 in total.
 
@@ -419,9 +445,9 @@ Nobody holds the endowment. It is the set of period UTXOs, and each one can only
 
 ## 7. Prototype
 
-The prototype is TypeScript on `@bsv/sdk` 4.0.1. It builds a file, encodes it, funds period UTXOs and spends them through the SDK's own script interpreter, `Spend`. It has not been broadcast to mainnet.
+The prototype is TypeScript on `@bsv/sdk` 4.0.1. It builds a file, encodes it, funds period UTXOs and spends them through the SDK's own script interpreter, `Spend`. Section 7.4 describes its run on mainnet.
 
-The real headers in the tests are Bitcoin's genesis block and block 1, which are also BSV's. The test checks their hashes before using them. Windows in later years use headers mined locally against a deliberately low floor.
+The keep-path tests use three real BSV blocks, 974,501, 974,508 and 974,509, with their coinbase transactions and full transaction lists; each header is checked against its hash and each transaction list against its Merkle root before use. The lapse-path tests use Bitcoin's genesis block and block 1, which are also BSV's. Blocks at later heights are mined locally against a deliberately low floor.
 
 ### 7.1 Results
 
@@ -432,30 +458,38 @@ A 64-chunk file of 256-byte chunks is encoded to 128 chunks (depth 7), with m = 
 | Genesis and block 1 header hashes match the known values | pass |
 | Block 1 rebuilt from WhatsOnChain-style JSON matches its real bytes | pass |
 | Compact bits `1d00ffff` expand to the difficulty-1 target | pass |
+| The real coinbase of block 974,509 records height 974,509 | pass |
+| Its six-level Merkle path (37 transactions) folds to the block's Merkle root | pass |
+| A made-up coinbase records the height it was made for | pass |
 | A random half of the encoded chunks rebuilds the data | pass |
 | One chunk fewer than half cannot rebuild it | pass |
-| Keep: operator, real genesis header inside the window, honest proofs | pass, 8,083-byte claim |
-| Keep: operator, mined 2030 header inside its window | pass |
+| Keep: operator, real block 974,509 at the pinned height, honest proofs | pass, 8,419-byte claim |
+| Keep: operator, mined block at the pinned height, seven transactions | pass |
+| Keep: operator, mined block holding only its coinbase (empty path) | pass |
 | Keep: one bit flipped in one chunk | rejected at the root comparison |
 | Keep: a valid chunk and path, but for a different index | rejected at the root comparison |
 | Keep: one corrupted sibling hash | rejected at the root comparison |
-| Keep: real header outside the window (block 1) | rejected at the window check |
-| Keep: header one minute after the window closes | rejected at the window check |
-| Keep: header below the proof-of-work floor | rejected at the floor check |
+| Keep: the block before (974,508) with 974,509's coinbase | rejected at the Merkle root check |
+| Keep: a real block at another height (974,501) with its own coinbase | rejected at the height check |
+| Keep: a mined block one height above the pin | rejected at the height check |
+| Keep: corrupted coinbase path | rejected at the Merkle root check |
+| Keep: coinbase path one level short | rejected at the Merkle root check |
+| Keep: first transaction is not a coinbase (non-null input) | rejected at the coinbase check |
+| Keep: pinned block whose header is below the proof-of-work floor | rejected at the floor check |
 | Keep: correct proofs, signed by someone else | rejected at the signature |
 | Keep: one proof short | rejected, stack underflow |
 | Lapse: steward, real header after the lapse time (block 1) | pass |
 | Lapse: header before the lapse time | rejected at the time check |
 | Lapse: signed by the operator | rejected at the signature |
 | Lapse: late header below the floor | rejected at the floor check |
-| Cheater holding 39.8% of chunks, 20,000 random headers, m = 4 | passed 2.46% of the time against 2.52% expected from f^m |
+| Cheater holding 39.8% of chunks, 20,000 random headers, m = 4 | passed 2.29% of the time against 2.52% expected from f^m |
 | Shards, any 3 of 5: every one of the 10 sets of three operators rebuilds the data | pass |
 | Shards: two operators cannot rebuild it | pass |
 | Keep: operator claims against their own shard root | pass |
 | Keep: another operator's shard | rejected at the root comparison |
-| Keep: 65,535-chunk deal at depth 16, m = 16 | pass; 6,300-byte locking script, 9,643-byte unlocking script with 64-byte chunks |
+| Keep: 65,535-chunk deal at depth 16, m = 16 | pass; 6,803-byte locking script, 9,980-byte unlocking script with 64-byte chunks |
 
-All 27 checks pass in about four seconds.
+All 34 checks pass in about five seconds.
 
 ### 7.2 Mutation check
 
@@ -463,7 +497,10 @@ A passing suite can mean the tests check nothing. `test/mutate.ts` copies the pr
 
 | Rule removed | Caught by |
 |---|---|
-| Keep window check | header outside the window; header after the window |
+| Pinned-height check | a real block at another height; a mined block one height above |
+| Coinbase input check | first transaction not a coinbase |
+| Coinbase tied to the header | the block before with this block's coinbase; corrupted path; path one level short |
+| Coinbase path folded as the left child | every honest claim |
 | Keep proof-of-work floor | header below the floor |
 | Operator signature | proofs signed by someone else |
 | Root comparison | flipped bit; wrong index; corrupted sibling |
@@ -474,26 +511,37 @@ A passing suite can mean the tests check nothing. `test/mutate.ts` copies the pr
 | Lapse proof-of-work floor | lapse header below the floor |
 | Steward signature | lapse signed by the operator |
 
-All 10 mutations are caught.
+All 13 mutations are caught.
 
 ### 7.3 Running it
 
 ```
 npm install
-npm test                 # the 27 checks
-npm run mutate           # the 10 mutations
+npm test                 # the 34 checks
+npm run mutate           # the 13 mutations
 npm run economics        # every number in sections 5 and 6
 ```
 
 ### 7.4 Mainnet test
 
-`npm run mainnet` funds one small development deal (environment byte 0x00) that stores this paper, using a throwaway key and about 30,000 sats. It creates two period outputs: the operator claims the first through the keep path with a real block header, and the steward sweeps the second through the lapse path an hour later. Everything is checked with the SDK interpreter before it is broadcast through ARC, and `withdraw` returns whatever is left. `--dry-run` rehearses the whole sequence against a local fake chain. As of this draft it has only been run in dry-run mode.
+`npm run mainnet` funds one small development deal (environment byte 0x00) that stores this paper, using a throwaway key and about 30,000 sats. It creates two period outputs: the operator claims the first through the keep path, and the steward sweeps the second through the lapse path an hour later. Everything is checked with the SDK interpreter before it is broadcast through ARC, and `withdraw` returns whatever is left. `--dry-run` rehearses the whole sequence against a local fake chain.
+
+It ran on mainnet on 7 and 8 November 2026, with the draft 0.2 script, which selected headers by timestamp:
+
+| Step | Transaction | Result |
+|---|---|---|
+| Funding: deal record and two period outputs with 3,972-byte scripts | `bc2e7ead…24a0eb` | mined in block 974,508 |
+| Claim of period A through the keep path: a header and 16 Merkle proofs, 12,707 bytes | `1b1d43d2…13055a` | mined in block 974,511 |
+| Sweep of period B through the lapse path | `06779fa4…747a45` | accepted |
+| Withdrawal of what was left | `c07cbaa1…482d77` | accepted |
+
+Every transaction paid GorillaPool's ARC rate of 100 sats per kB, 2,173 sats in all. The run found two faults in the test tooling, not the script. `@bsv/sdk` 4.0.1 reports a GorillaPool reply carrying `"competingTxs": null` as a rejection, so the test now checks WhatsOnChain when a reply cannot be read. And WhatsOnChain's free rate limit is shared by every user of a hosting service's outbound address, so its requests now retry. The height-pinned script of draft 0.3 has so far run only in dry-run mode.
 
 ---
 
 ## 8. Limitations and open problems
 
-**UTXO footprint.** Version 1 creates every period UTXO at the start: 1,800 UTXOs of 6.3 kB for a 1 GiB, fifty-year deal. Longer periods reduce this for small deals, but the real fix is a carry-forward covenant: one UTXO per operator that, when claimed, must recreate itself with the next window and its value reduced by one payment. BSV script can enforce this by checking the spending transaction's signature preimage (the OP_PUSH_TX technique). That cuts the example deal from 1,800 UTXOs to three, and the security argument is unchanged because each step still needs a header from its own window. It matters more with shards: a 3-of-5 deal has five operators, so version 1 would need 3,000 UTXOs where version 2 needs five. It has not been built.
+**UTXO footprint.** Version 1 creates every period UTXO at the start: 1,800 UTXOs of 6.8 kB for a 1 GiB, fifty-year deal. Longer periods reduce this for small deals, but the real fix is a carry-forward covenant: one UTXO per operator that, when claimed, must recreate itself pinned to the next period's height and with its value reduced by one payment. BSV script can enforce this by checking the spending transaction's signature preimage (the OP_PUSH_TX technique). That cuts the example deal from 1,800 UTXOs to three, and the security argument is unchanged because each step still needs the header of its own pinned block. It matters more with shards: a 3-of-5 deal has five operators, so version 1 would need 3,000 UTXOs where version 2 needs five. It has not been built.
 
 **Independent copies.** Nothing in version 1 shows that operators hold separate copies (section 5.5). Sealing, as in Filecoin, is the known approach, and it is expensive.
 
@@ -501,11 +549,9 @@ npm run economics        # every number in sections 5 and 6
 
 **The steward.** The steward is trusted not to front-run small payments (5.6) and needs to be online to repair a deal. If the steward disappears, operators keep claiming and the deal continues with whatever copies remain; only repair stops.
 
-**Miner policy.** Period scripts are non-standard. SV Node relays and mines non-standard outputs after Genesis according to its `-acceptnonstdoutputs` setting, and its defaults allow transactions up to 10 MB, scripts up to 500 kB and script numbers up to 10 kB. Proof of Keep stays inside those (scripts of 6.3 kB, numbers of at most 33 bytes, claims of at most 8.4 MB), but the policies of TAAL, GorillaPool and Teranode need confirming before a mainnet deal is funded.
+**Miner policy.** Period scripts are non-standard. SV Node relays and mines non-standard outputs after Genesis according to its `-acceptnonstdoutputs` setting, and its defaults allow transactions up to 10 MB, scripts up to 500 kB and script numbers up to 10 kB. Proof of Keep stays inside those (scripts of 6.8 kB, numbers of at most 33 bytes, claims of at most 8.4 MB). GorillaPool's ARC policy on 11 November 2026 allowed transactions and scripts up to 100 MB, and the mainnet test's funding and claim were both mined (section 7.4). Claims near the 8.4 MB end, and TAAL's and Teranode's policies, are still to be confirmed.
 
 **Network decline.** If hashrate falls below a deal's floor, its funds are stuck (5.7).
-
-**Header choice and timestamps.** Version 1 selects a period's header by its timestamp. That lets an operator choose among the roughly 36 real headers in a window (5.3). Consensus also lets a miner set a timestamp up to two hours ahead, so a miner who is also an operator can learn a window's challenge early by mining a real block for it, at the cost of a block reward each time. Pinning each period to one block height removes both problems. The script would check a Merkle path from the block's coinbase transaction, which records the block's height, to the header's Merkle root. This follows bstore's section 7.7 and clarification C12. It makes each claim slightly larger, and it has not been built.
 
 **Deal size.** One deal holds at most 65,535 encoded chunks across all operators. Larger files are split into several deals, each with its own roots and schedule.
 
@@ -515,13 +561,12 @@ npm run economics        # every number in sections 5 and 6
 
 ## 9. Next steps
 
-1. **Confirm miner policy** by running the mainnet test (7.4), then by asking about claims of up to 8.4 MB.
-2. **Pin periods to block heights** (section 8), so that the operator never chooses the challenge.
-3. **Agree the fit with bstore's maintainers:** a bstore proof profile over erasure-coded chunks, and Proof of Keep's period output as the `st` `0x04` output bstore reserves. Operators then run as bstore providers, and the steward's watching becomes a bstore client, rather than separate software.
-4. **Run a mainnet pilot:** one public archive split into 3-of-5 shards, five operators with distinct identities, monthly windows, for twelve months, publishing every claim and every miss.
-5. **Build version 2,** the carry-forward covenant.
-6. **Propose the deal record and the period script template as a BRC,** jointly with bstore if its maintainers agree.
-7. **Research sealing** for independent copies.
+1. **Run the height-pinned script on mainnet** (section 7.4 ran draft 0.2's), and confirm that claims of up to 8.4 MB are accepted.
+2. **Agree the fit with bstore's maintainers:** Proof of Keep's period output as the `st` `0x04` output bstore reserves, built on bstore's existing proof profile 1 over an erasure-coded object, with bstore's index formula seeded by the pinned block. Operators then run as bstore providers, and the steward's watching becomes a bstore client, rather than separate software.
+3. **Run a mainnet pilot:** one public archive split into 3-of-5 shards, five operators with distinct identities, monthly periods, for twelve months, publishing every claim and every miss.
+4. **Build version 2,** the carry-forward covenant.
+5. **Propose the deal record and the period script template as a BRC,** jointly with bstore if its maintainers agree.
+6. **Research sealing** for independent copies.
 
 ---
 
@@ -558,7 +603,7 @@ Network figures are a snapshot and should be refreshed before any deal is priced
 | Cold storage | $0.00099 per GB-month | S3 Glacier Deep Archive list price |
 | Hot storage | $0.023 per GB-month | S3 Standard list price |
 | Erasure overhead, operators, margin | 2×, 3, 2× | Version 1 defaults |
-| Safety factor on the per-window cap | 4 | Version 1 default |
+| Safety factor on the per-period cap | 4 | Version 1 default |
 
 ## Appendix B: version 1 defaults
 
@@ -567,10 +612,10 @@ Network figures are a snapshot and should be refreshed before any deal is priced
 | Layout | Shards, any 3 of 5, for long archives; full copies when one operator must serve the whole file | Survives two operator losses at 1.67× storage instead of 6× |
 | Code rate | Full copies: 1/2 inside each copy. Shards: 3/5 across operators | Full copies: data is lost only below half the chunks, which m samples detect |
 | Samples per claim, m | 16 | A 49% holder needs about 90,500 floor-meeting headers per pass |
-| Window | 6 hours | About 36 real headers, so a window with none is practically impossible |
-| Lapse grace | 14 days after the window | Time for an operator using slow storage to claim |
+| Pinned height | One block per period, 4,320 blocks apart for monthly periods | The operator has no choice of header, so no choice of challenge |
+| Lapse grace | 14 days after the pinned block's expected time | Time for an operator using slow storage to claim |
 | Keep floor | 1/64 of the difficulty at deal creation | Forging costs about $0.86; survives a 64× hashrate drop |
 | Lapse floor | 1/1024 of the difficulty at deal creation | Recovery survives a 1,024× hashrate drop |
-| Period | Monthly up to 18 GiB, weekly up to 79 GiB, daily up to 554 GiB | Keeps each window's payment under the cap in 5.2 |
+| Period | Monthly up to 18 GiB, weekly up to 79 GiB, daily up to 554 GiB | Keeps each period's payment under the cap in 5.2 |
 | Operators | 5 with shards, 3 with full copies | Either layout survives two operator failures |
 | Repair reserve | 10% of deal value | Funds a replacement before the failed operator's periods lapse |

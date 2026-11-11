@@ -1,0 +1,68 @@
+// Real BSV mainnet blocks, copied from WhatsOnChain on 11 November 2026, for the pinned-height tests.
+// Each header is rebuilt from its fields and checked against its hash; each transaction list is
+// checked against the header's Merkle root. Txids are in display order (as explorers show them).
+import { Bytes, fromHex, hash256 } from '../src/bytes.js'
+import { headerFromJson } from '../src/chain.js'
+import { txMerkleRoot, coinbasePath, headerMerkleRoot } from '../src/beacon.js'
+
+export interface RealBlock { height: number, header: Bytes, coinbase: Bytes, txids: Bytes[], path: Bytes[] }
+
+function block (j: any, coinbaseHex: string, txids: string[]): RealBlock {
+  const header = headerFromJson(j, j.height).bytes
+  const ids = txids.map(t => fromHex(t).reverse())
+  const coinbase = fromHex(coinbaseHex)
+  if (hash256(coinbase).join() !== ids[0].join()) throw new Error(`coinbase of ${j.height} does not hash to its txid`)
+  if (txMerkleRoot(ids).join() !== headerMerkleRoot(header).join()) throw new Error(`transactions of ${j.height} do not match its Merkle root`)
+  return { height: j.height, header, coinbase, txids: ids, path: coinbasePath(ids) }
+}
+
+/** Kryptex, 37 transactions: a six-level coinbase path. */
+export const B974509 = block({
+  height: 974509, hash: '0000000000000000041b85bb3496c03c8c7941daf1313779ebd59e4297926756', version: 1073676288,
+  previousblockhash: '0000000000000000195efe2cd092b9c6165237074b55cf2e80ee1ef17683183f',
+  merkleroot: 'e5d455537add716ee99c5eda5e187f7e33715819648d3a5062514155374e0951',
+  time: 1794075212, bits: '181fd0e3', nonce: 1241376036
+}, '02000000010000000000000000000000000000000000000000000000000000000000000000ffffffff3703adde0e04456aef6a2f706f6f6c2e6b7279707465782e636f6d2f0495f076bd974cb33492304b20ad5f28000039858f22d39d00000000ffffffff01ad92a012000000001976a91459341cc701a9cd31fa629e0b7d8fb1fbcf00b67788ac00000000', [
+  'b6c4e48f6615103da44b81adfb1a403c7a9c2c15d03b6be63d4308df0a017f90', '087cc99a6f0dbfc7f1ca9f08d9f1503ca5b9a2875502d401cd67c49dda402a9c',
+  '04b2cc5b5f17a5985d46c52b2c13a065e47e1d578fe9a302d9a680996e6919d1', '6bdd9070cd1e980a2a445ccd07da60446c96f6a11f321034d9b938aa1b891bcd',
+  '14e164dc713049626ae4a851f73500289757f2dc5167164747e2d9a99b2c5042', '00b8ed17b373cf70ab47d4cfa061de5487d541a2af795af0ce855707485ee96b',
+  'df9656eb6d90f44faa50ee4d00b812064603a298dde042772d66446109e84eb8', '93d12ef63f844c8467cdca04e4e23d39d6c43cae6d1fc8954a2e16e89f955cd8',
+  '6b2955e51add055ddb458ddb2498fa683a44dfb6bb949bcde14620a662e8e931', '723504b561165c6e339c112098cde95ba85f1550fdcf0a10d686a0cd65dfdf30',
+  '9507aad312cdc5e4204bd57aa158785f746fcec458b1cf9e41fbc3c148b40ed1', '5a10c8dee291e766e3e021d47769bdc8534fb6631916e1b4b3e806ddd1466662',
+  '3cb5fb52c1e33ea4d5ae2c28cf937b71597681116c319ff81d1f0c5090adf38d', '01b602d80e27ea0cb79dec6e4546a9023187eae580c0cb090b8282b1abf55188',
+  '5c49fcbb88d3b1a22c1a9cd90646341ad0fcadcfd54d26fe3f5ce01671e45253', '6a74c150c2ed3bd7ba930b94e2252803d046681864e6ac8f3136767ad1159547',
+  '6665f368eecba93e140e7d9598d66462bcdcc855f1b8bdb3b6fea3e0913024af', 'd4070e3e87f7afb2d366ac57b99c73d912cf9f799bc550a897a60c501885a4b8',
+  '35ee1973a9b65ccb8bb4904400621157e67545de25c35995263687c323041ab1', '3a1ad1d69ada5dd782da957710df09d708cc3267747f33fc35ee661428c0f36a',
+  '59c5287a410fa1f3dc4099b479ad024326fab4ac00a8f4883d0da1dbaac42fb0', '551ac98a270cc6d3fa29b2351bf92c2088077692d3be8009f38e59fb7176c9b7',
+  'fbb8043f747f9e404a5723e35bfb25787acdd74e63d33fe8a54dc30e2deb99f1', '45b350da445c4fffd625e70a4e6f9c4f162e1de05a0c84b16153259e9ce223d0',
+  '2c033e3adeb68c25cf1b1365a6dad0ef7482e4e644a118cc80cf3e17e6b74ba9', 'dcfea813f38c2249fcdba05e531b81baa7f06988494ecb973e89eafd604dd951',
+  '4125f0e1777d7b2405baa349af6ba99cfcd553515aab728059e344ab4c61a6db', '5382a032e95e00c03b62b10504e87be1a8fa0d0d2f7b6420db546dd70596d5cc',
+  'c4c132219ebc58299a11d0525b79e5e747ba8eed88820e73ce5351f0b1cb8e2b', 'c893e85714d98433d06775280c7c9bcdbdd2e5c8a104755af1323d9f9405a00b',
+  'f2dce2dd872ee7ba0a9a83d44ad536923a76bf706e92458130bb616202f1568d', 'aaa3965263e6351e888b5c2afd1e6128cb884e5bff05cca3446c1cf76fdf83d3',
+  '2b80de7fa7726415f05cfeec649c1a4b725246936dfe72ba602e3f5294a8430e', 'ded9b35f4b2a8f371ee701b7857affbbab663342237429d44ae4a543e253e2fe',
+  '57a4a01b73587ea339a110f2f295f0958bc4eae8b028190e19b73f3751a3541a', 'deb64dbad2db47b156650348734932ccce78133359678440a2e34afd47b3faea',
+  '46f4d57706f1b430c44e9e479c1e328090cfae311e4b412fe4b4ab8b90b558b5'
+])
+
+/** Kryptex, 11 transactions: a second real coinbase, at a different height. */
+export const B974501 = block({
+  height: 974501, hash: '0000000000000000005a39385bd6bd6aff04db53650fe5e31afbdda67846e33b', version: 677806080,
+  previousblockhash: '000000000000000010fcdf438a57294e68068414ba1978f1fb2f98d97e97e989',
+  merkleroot: 'b973d924f49baeb52d7e69146afee656adbabee5c419c9f5ada0269b6de2e618',
+  time: 1794067422, bits: '181e4523', nonce: 680946847
+}, '02000000010000000000000000000000000000000000000000000000000000000000000000ffffffff3703a5de0e04de4bef6a2f706f6f6c2e6b7279707465782e636f6d2f3a94d8cf0ed188928e8cd007abc333e00000398564a8706f00000000ffffffff01a567a012000000001976a91459341cc701a9cd31fa629e0b7d8fb1fbcf00b67788ac00000000', [
+  '4a53114d6f180e2067a44b85f49c73521cb4a89293878d56f14aac3f86036f9f', '7af02af3bb137e0c0b61c5310d49b529b7e7c29fe441e6fa33f5cdd751798d89',
+  '3bde7671468f9d743c2f3e1c78a677ed753a70731a9aa0c168888bc1ff4526d4', '9ef6665ec905a7bd842d8c0f58d4a2a94be3c8db28175fca75d42fcad697aa60',
+  '6f7e7f70b882d72c231f4ae7d6683ab2fe7c9bb22d8d1db7a77f54dcca2db190', 'a0ce4a36612eca7826158179873131442f210e2a15e8634aeceaae79e37b38c3',
+  '9913e1efcc68f3cdbf1402e9a626eae2284ba3a3dc81ceb788d9501912526760', '67b73ff728fee1ba0aaa63110d958b17a71b859974fa27d7e66eea5b9f20afc7',
+  '3ca3316cf9bdfdd403e36f7b15561d7a2b79b926ef811fb4353d7edb43afb2f7', 'a14a16f9a36cd9f4c88ae20b6a5aab3dc85c23d54ca142cd808ca61169a5e3e4',
+  '1abf6383e3656dd788805e6f0a0e52c349c1d4b7b54aa85caaf7761a9352e42c'
+])
+
+/** The block before 974,509 (MolePool): a real header that meets the same floor, at another height. */
+export const H974508 = headerFromJson({
+  height: 974508, hash: '0000000000000000195efe2cd092b9c6165237074b55cf2e80ee1ef17683183f', version: 561192960,
+  previousblockhash: '00000000000000000c5eda07ae3e95d52fba8e4f480bf47ea0d1c9bcdef8e1b1',
+  merkleroot: '6f9eea239d1354c70d219497ca776f525b644d848b47b8b871172f63921dda1d',
+  time: 1794073976, bits: '181fcaa9', nonce: 4096770904
+}, 974508).bytes

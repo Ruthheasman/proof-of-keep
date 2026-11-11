@@ -4,8 +4,11 @@ import { PrivateKey } from '@bsv/sdk'
 import { Bytes, randomBytes, fromHex, toHex } from '../src/bytes.js'
 import { encode, decode } from '../src/erasure.js'
 import { FileTree, checkPath } from '../src/merkle.js'
-import { MAX_TARGET, targetForDifficulty, challengeIndices, mineHeader, headerTime, headerHash, meetsTarget } from '../src/beacon.js'
-import { PeriodTerms, Proof, periodLockingScript } from '../src/script.js'
+import { MAX_TARGET, targetForDifficulty, challengeIndices, mineHeader, mineBlock, makeCoinbase, headerHash, meetsTarget,
+  coinbaseHeight, foldCoinbasePath, headerMerkleRoot, TestBlock } from '../src/beacon.js'
+import { PeriodTerms, Proof, PinnedBlock, periodLockingScript } from '../src/script.js'
+import { hash256 } from '../src/bytes.js'
+import { B974509, B974501, H974508 } from './blocks.js'
 import { fundingTx, trySpend } from '../src/deal.js'
 import { headerFromJson, bitsToTarget } from '../src/chain.js'
 
@@ -21,6 +24,8 @@ const BLOCK1 = fromHex('010000006fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c
 
 const proofsFor = (tree: FileTree, chunks: Bytes[], header: Bytes, m: number): Proof[] =>
   challengeIndices(header, tree.root, tree.count, m).map(i => ({ chunk: chunks[i], siblings: tree.path(i) }))
+const pin = (b: { header: Bytes, coinbase: Bytes, path: Bytes[] }): PinnedBlock => ({ header: b.header, coinbase: b.coinbase, path: b.path })
+const same = (a: Bytes, b: Bytes) => toHex(a) === toHex(b)
 
 async function main () {
   const rng = { s: 0x1234567 }
@@ -39,6 +44,12 @@ async function main () {
     time: 1231469665, bits: '1d00ffff', nonce: 2573394689 }, 1)
   check('header rebuilt from JSON matches the real block 1 bytes', toHex(b1.bytes) === toHex(BLOCK1))
   check('compact bits 1d00ffff expand to the difficulty-1 target', bitsToTarget(0x1d00ffff) === MAX_TARGET)
+
+  // ---- the pinned block: a real coinbase records its height and folds to its header ----------
+  check('real coinbase of block 974,509 records height 974,509 (BIP34)', coinbaseHeight(B974509.coinbase) === 974509)
+  check(`real coinbase path of 974,509 (${B974509.path.length} levels, ${B974509.txids.length} txs) folds to its header's Merkle root`,
+    same(foldCoinbasePath(hash256(B974509.coinbase), B974509.path), headerMerkleRoot(B974509.header)))
+  check('a made-up coinbase records the height it was made for', coinbaseHeight(makeCoinbase(2_000_000)) === 2_000_000)
 
   // ---- file: 64 data chunks, rate-1/2 erasure code -> 128 chunks of 256 bytes ---------------
   const k = 64, n = 128, size = 256, m = 16
@@ -62,62 +73,83 @@ async function main () {
     operatorKey: operator.toPublicKey().encode(true) as Bytes,
     stewardKey: steward.toPublicKey().encode(true) as Bytes
   }
-  // Period 0: a window around the genesis block, floor = difficulty 1 (real 2009 headers meet it)
+  // Period 0: pinned to real block 974,509, floor = difficulty 1 (every real header meets it).
+  // Its lapse path reuses 2009 headers, whose timestamps sit either side of lapseTime.
   const realTerms: PeriodTerms = {
-    ...base, windowStart: 1231000000, windowEnd: 1231010000, keepTarget: MAX_TARGET,
+    ...base, height: 974509, keepTarget: MAX_TARGET,
     lapseTime: 1231400000, lapseTarget: MAX_TARGET
   }
-  // Period 1: a 2030 window with a cheap test floor so we can mine headers locally
+  // Period 1: pinned to height 2,000,000 with a cheap test floor, so blocks can be mined locally
   const testTarget = targetForDifficulty(1 / 65536)
-  const t2030 = 1893456000
+  const t2030 = 1893456000, H = 2_000_000
   const testTerms: PeriodTerms = {
-    ...base, windowStart: t2030, windowEnd: t2030 + 6 * 3600, keepTarget: testTarget,
-    lapseTime: t2030 + 6 * 3600 + 14 * 86400, lapseTarget: testTarget
+    ...base, height: H, keepTarget: testTarget,
+    lapseTime: t2030 + 14 * 86400, lapseTarget: testTarget
   }
   const funding = fundingTx([realTerms, testTerms], 5000)
   const lockBytes = periodLockingScript(realTerms).toBinary().length
   console.log(`period locking script: ${lockBytes} B (m=${m}, d=${tree.depth})\n`)
 
   // ---- keep path ---------------------------------------------------------------------------
-  const honest = proofsFor(tree, chunks, GENESIS, m)
-  check('off-chain path check agrees', honest.every((p, j) => checkPath(p.chunk, challengeIndices(GENESIS, tree.root, tree.count, m)[j], p.siblings, tree.root)))
-  let r = await trySpend(funding, 0, operator, { kind: 'keep', header: GENESIS, proofs: honest })
-  check('keep: operator, real genesis header in window, honest proofs', r.ok, r.error ?? `unlocking ${r.unlockingBytes} B, claim tx ${r.txBytes} B`)
+  const real = pin(B974509)
+  const honest = proofsFor(tree, chunks, real.header, m)
+  check('off-chain path check agrees', honest.every((p, j) => checkPath(p.chunk, challengeIndices(real.header, tree.root, tree.count, m)[j], p.siblings, tree.root)))
+  let r = await trySpend(funding, 0, operator, { kind: 'keep', block: real, proofs: honest })
+  check('keep: operator, real block 974,509 at the pinned height, honest proofs', r.ok, r.error ?? `unlocking ${r.unlockingBytes} B, claim tx ${r.txBytes} B`)
 
-  const inWindow = mineHeader(t2030 + 600, testTarget, 7)
-  r = await trySpend(funding, 1, operator, { kind: 'keep', header: inWindow, proofs: proofsFor(tree, chunks, inWindow, m) })
-  check('keep: operator, mined 2030 header in window', r.ok, r.error)
+  const mined: TestBlock = mineBlock(H, t2030 + 600, testTarget, 6, 7)
+  r = await trySpend(funding, 1, operator, { kind: 'keep', block: pin(mined), proofs: proofsFor(tree, chunks, mined.header, m) })
+  check('keep: operator, mined block at the pinned height (7 transactions)', r.ok, r.error)
+
+  const lone: TestBlock = mineBlock(H, t2030 + 900, testTarget, 0, 8)
+  r = await trySpend(funding, 1, operator, { kind: 'keep', block: pin(lone), proofs: proofsFor(tree, chunks, lone.header, m) })
+  check('keep: operator, mined block holding only its coinbase (empty path)', r.ok, r.error)
 
   const tampered = honest.map(p => ({ ...p, chunk: [...p.chunk] }))
   tampered[3].chunk[10] ^= 1
-  r = await trySpend(funding, 0, operator, { kind: 'keep', header: GENESIS, proofs: tampered })
+  r = await trySpend(funding, 0, operator, { kind: 'keep', block: real, proofs: tampered })
   check('keep rejects: one flipped bit in one chunk', !r.ok, r.error)
 
-  const idx = challengeIndices(GENESIS, tree.root, tree.count, m)
+  const idx = challengeIndices(real.header, tree.root, tree.count, m)
   const wrongIdx = honest.map((p, j) => j === 5 ? { chunk: chunks[(idx[j] + 1) % n], siblings: tree.path((idx[j] + 1) % n) } : p)
-  r = await trySpend(funding, 0, operator, { kind: 'keep', header: GENESIS, proofs: wrongIdx })
+  r = await trySpend(funding, 0, operator, { kind: 'keep', block: real, proofs: wrongIdx })
   check('keep rejects: valid chunk + path, but for a different index', !r.ok, r.error)
 
   const wrongSib = honest.map((p, j) => j === 0 ? { ...p, siblings: p.siblings.map((s, l) => l === 2 ? randomBytes(32, rng) : s) } : p)
-  r = await trySpend(funding, 0, operator, { kind: 'keep', header: GENESIS, proofs: wrongSib })
+  r = await trySpend(funding, 0, operator, { kind: 'keep', block: real, proofs: wrongSib })
   check('keep rejects: corrupted sibling hash', !r.ok, r.error)
 
-  r = await trySpend(funding, 0, operator, { kind: 'keep', header: BLOCK1, proofs: proofsFor(tree, chunks, BLOCK1, m) })
-  check('keep rejects: real header outside the window (block 1)', !r.ok, r.error)
+  // choosing the header: every real alternative must fail
+  r = await trySpend(funding, 0, operator, { kind: 'keep', block: { ...real, header: H974508 }, proofs: proofsFor(tree, chunks, H974508, m) })
+  check("keep rejects: the block before (974,508) presented with 974,509's coinbase", !r.ok, r.error)
 
-  const lateTest = mineHeader(testTerms.windowEnd + 60, testTarget, 9)
-  r = await trySpend(funding, 1, operator, { kind: 'keep', header: lateTest, proofs: proofsFor(tree, chunks, lateTest, m) })
-  check('keep rejects: header one minute after window end', !r.ok, r.error)
+  r = await trySpend(funding, 0, operator, { kind: 'keep', block: pin(B974501), proofs: proofsFor(tree, chunks, B974501.header, m) })
+  check('keep rejects: a real block at another height (974,501), with its own coinbase', !r.ok, r.error)
 
-  const weak = [...inWindow]; weak[76] ^= 0xff // break the nonce
+  const above: TestBlock = mineBlock(H + 1, t2030 + 600, testTarget, 6, 9)
+  r = await trySpend(funding, 1, operator, { kind: 'keep', block: pin(above), proofs: proofsFor(tree, chunks, above.header, m) })
+  check('keep rejects: a mined block one height above the pin', !r.ok, r.error)
+
+  r = await trySpend(funding, 0, operator, { kind: 'keep', block: { ...real, path: real.path.map((s, l) => l === 3 ? randomBytes(32, rng) : s) }, proofs: honest })
+  check('keep rejects: corrupted coinbase path', !r.ok, r.error)
+
+  r = await trySpend(funding, 0, operator, { kind: 'keep', block: { ...real, path: real.path.slice(0, -1) }, proofs: honest })
+  check('keep rejects: coinbase path one level short', !r.ok, r.error)
+
+  const notCoinbase = makeCoinbase(H, [0x42]); notCoinbase[5] ^= 1 // spends a real outpoint, height push intact
+  const forged: TestBlock = mineBlock(H, t2030 + 600, testTarget, 6, 10, notCoinbase)
+  r = await trySpend(funding, 1, operator, { kind: 'keep', block: pin(forged), proofs: proofsFor(tree, chunks, forged.header, m) })
+  check('keep rejects: first transaction is not a coinbase (non-null input)', !r.ok, r.error)
+
+  const weak = [...mined.header]; weak[76] ^= 0xff // break the nonce, Merkle root unchanged
   if (meetsTarget(weak, testTarget)) weak[77] ^= 0xff
-  r = await trySpend(funding, 1, operator, { kind: 'keep', header: weak, proofs: proofsFor(tree, chunks, weak, m) })
-  check('keep rejects: header below the PoW floor', !r.ok, r.error)
+  r = await trySpend(funding, 1, operator, { kind: 'keep', block: { ...pin(mined), header: weak }, proofs: proofsFor(tree, chunks, weak, m) })
+  check('keep rejects: pinned block whose header is below the PoW floor', !r.ok, r.error)
 
-  r = await trySpend(funding, 0, stranger, { kind: 'keep', header: GENESIS, proofs: honest })
+  r = await trySpend(funding, 0, stranger, { kind: 'keep', block: real, proofs: honest })
   check('keep rejects: correct proofs, signed by someone else', !r.ok, r.error)
 
-  r = await trySpend(funding, 0, operator, { kind: 'keep', header: GENESIS, proofs: honest.slice(0, m - 1) })
+  r = await trySpend(funding, 0, operator, { kind: 'keep', block: real, proofs: honest.slice(0, m - 1) })
   check('keep rejects: one proof short', !r.ok, r.error)
 
   // ---- lapse path --------------------------------------------------------------------------
@@ -168,9 +200,9 @@ async function main () {
   const tree0 = new FileTree(shard0), tree1 = new FileTree(shard1)
   const shardTerms: PeriodTerms = { ...realTerms, root: tree0.root, chunkCount: tree0.count, depth: tree0.depth }
   const shardFunding = fundingTx([shardTerms], 5000)
-  r = await trySpend(shardFunding, 0, operator, { kind: 'keep', header: GENESIS, proofs: proofsFor(tree0, shard0, GENESIS, m) })
+  r = await trySpend(shardFunding, 0, operator, { kind: 'keep', block: real, proofs: proofsFor(tree0, shard0, real.header, m) })
   check('keep: operator claims against its own shard root', r.ok, r.error)
-  r = await trySpend(shardFunding, 0, operator, { kind: 'keep', header: GENESIS, proofs: proofsFor(tree1, shard1, GENESIS, m) })
+  r = await trySpend(shardFunding, 0, operator, { kind: 'keep', block: real, proofs: proofsFor(tree1, shard1, real.header, m) })
   check("keep rejects: another operator's shard", !r.ok, r.error)
 
   // ---- full-size tree: 65,535 chunks, depth 16 ---------------------------------------------
@@ -178,7 +210,7 @@ async function main () {
   const bigTree = new FileTree(big)
   const bigTerms: PeriodTerms = { ...realTerms, root: bigTree.root, chunkCount: bigTree.count, depth: bigTree.depth }
   const bigFunding = fundingTx([bigTerms], 5000)
-  r = await trySpend(bigFunding, 0, operator, { kind: 'keep', header: GENESIS, proofs: proofsFor(bigTree, big, GENESIS, m) })
+  r = await trySpend(bigFunding, 0, operator, { kind: 'keep', block: real, proofs: proofsFor(bigTree, big, real.header, m) })
   const bigLock = periodLockingScript(bigTerms).toBinary().length
   check('keep: 65,535-chunk deal, depth 16, m=16', r.ok, r.error ?? `locking ${bigLock} B, unlocking ${r.unlockingBytes} B with 64 B chunks`)
 

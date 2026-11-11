@@ -1,7 +1,7 @@
 // Glue: build a funding transaction holding period UTXOs, and spend one through the SDK interpreter.
 import { Transaction, P2PKH, PrivateKey, Spend, UnlockingScript } from '@bsv/sdk'
 import { Bytes } from './bytes.js'
-import { PeriodTerms, periodLockingScript, keepUnlockingScript, lapseUnlockingScript, Proof } from './script.js'
+import { PeriodTerms, periodLockingScript, keepUnlockingScript, lapseUnlockingScript, Proof, PinnedBlock } from './script.js'
 
 export function fundingTx (terms: PeriodTerms[], satsEach: number): Transaction {
   // The parent is a stand-in: the test exercises the period scripts, not the funding input.
@@ -13,7 +13,7 @@ export function fundingTx (terms: PeriodTerms[], satsEach: number): Transaction 
   return tx
 }
 
-type Path = { kind: 'keep', header: Bytes, proofs: Proof[] } | { kind: 'lapse', header: Bytes }
+type Path = { kind: 'keep', block: PinnedBlock, proofs: Proof[] } | { kind: 'lapse', header: Bytes }
 
 /** Spend output `vout` of `funding` to a P2PKH, signed by `key`, and run it through the interpreter. */
 export async function trySpend (funding: Transaction, vout: number, key: PrivateKey, path: Path):
@@ -29,7 +29,7 @@ Promise<{ ok: boolean, error?: string, unlockingBytes: number, txBytes: number }
         const base = await new P2PKH().unlock(key, 'all', false, out.satoshis, out.lockingScript).sign(t, i)
         const sig = base.chunks[0].data as Bytes
         return path.kind === 'keep'
-          ? keepUnlockingScript(sig, path.header, path.proofs)
+          ? keepUnlockingScript(sig, path.block, path.proofs)
           : lapseUnlockingScript(sig, path.header)
       },
       estimateLength: async () => 0
