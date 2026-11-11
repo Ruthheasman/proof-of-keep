@@ -12,7 +12,7 @@ BSV can prove that a piece of data existed at a given time, cheaply and indefini
 
 Proof of Keep answers it with an ordinary output script. At the start of a deal the whole storage fee is locked on-chain as a schedule of UTXOs, one per operator per period. Each UTXO pays out only to its operator, and only when they present a set of randomly chosen chunks of the file with Merkle paths to the deal's root. The choice of chunks is derived from the header of the block at a height fixed for that period, which the script checks against a proof-of-work floor, so nobody can know the challenge in advance without paying for the work. Periods an operator fails to claim lapse to a steward, who pays a replacement from the remaining copies. It is designed to be the on-chain payment output that bstore, a storage market on BSV, reserves but does not yet define (section 2.1).
 
-A working prototype runs every rule through the `@bsv/sdk` script interpreter: 34 checks pass and 13 deliberate mutations of the script are all caught. A claim through the keep path has been mined on BSV mainnet. At cold-storage prices, keeping 1 GiB for fifty years costs about $7 with three full copies, or about $2 if the file is split across five operators so that any three of them can rebuild it. The on-chain fees over a whole deal come to well under a dollar.
+A working prototype runs every rule through the `@bsv/sdk` script interpreter: 34 checks pass and 13 deliberate mutations of the script are all caught. A claim through the keep path has been mined on BSV mainnet. At cold-storage prices, keeping 1 GiB for fifty years costs about $7 with three full copies, or about $2 if the file is split across five operators so that any three of them can rebuild it. On-chain fees depend on the rate miners charge. At 1 sat per kB, the rate TAAL and GorillaPool announced in 2023, a whole deal's fees come to well under a dollar. At GorillaPool's current 100 sats per kB, a monthly claim costs more than a month's pay, so small deals need long periods and deals above a few GiB do not cover their fees (section 6.3).
 
 Proof of Keep does not prove that three operators hold three independent copies, it carries BSV price risk, and version 1 leaves a large footprint in the UTXO set. Section 8 covers each.
 
@@ -411,12 +411,14 @@ The payment schedule is fixed in satoshis when the deal is funded. If BSV's pric
 
 Chunk size sets both the largest file one deal can hold and the size of each claim. Version 1 caps a deal at 65,535 encoded chunks, and a claim must stay under the 10 MB transaction policy limit in SV Node.
 
-| Chunk size | Largest file per full-copy deal | Claim transaction | Claim fee at 1 sat/kB |
-|---|---|---|---|
-| 4 KiB | 0.12 GiB | 75 kB | 76 sats |
-| 64 KiB | 2 GiB | 1.06 MB | 1,059 sats |
-| 256 KiB | 8 GiB | 4.2 MB | 4,205 sats |
-| 512 KiB | 16 GiB | 8.4 MB | 8,399 sats |
+Fees are shown at two rates: 1 sat per kB, which TAAL and GorillaPool announced in 2023, and 100 sats per kB, the policy of GorillaPool's ARC on 11 November 2026 and the rate the mainnet test paid (section 7.4).
+
+| Chunk size | Largest file per full-copy deal | Claim transaction | Claim fee at 1 sat/kB | Claim fee at 100 sat/kB |
+|---|---|---|---|---|
+| 4 KiB | 0.12 GiB | 75 kB | 76 sats | 7,527 sats ($0.0013) |
+| 64 KiB | 2 GiB | 1.06 MB | 1,059 sats | 105,830 sats ($0.019) |
+| 256 KiB | 8 GiB | 4.2 MB | 4,205 sats | 420,403 sats ($0.074) |
+| 512 KiB | 16 GiB | 8.4 MB | 8,399 sats | 839,834 sats ($0.15) |
 
 The period locking script is 6,804 bytes at depth 16 with 16 samples, including the height pinning. With 3-of-5 shards the largest file per deal at 64 KiB chunks is 2.4 GiB, since the 65,535-chunk limit covers all five shards together.
 
@@ -425,15 +427,50 @@ For 1 GiB with three full copies, 64 KiB chunks, monthly periods and fifty years
 | Item | Amount |
 |---|---|
 | Period UTXOs | 1,800 |
-| Funding transactions | 12.3 MB in total, split into one per operator to stay under 10 MB; 12,269 sats |
-| Claim fees over the deal | 1.9 million sats, about $0.34 |
+| Funding transactions | 12.3 MB in total, split into one per operator to stay under 10 MB; 12,269 sats at 1 sat/kB, 1.2 million sats ($0.22) at 100 |
+| Claim fees over the deal | 1.9 million sats ($0.34) at 1 sat/kB; 190 million sats ($34) at 100 |
 | UTXO set footprint at the start | up to 12.2 MB |
 
-A 3-of-5 shard deal of the same size makes 3,000 claims of about 1.06 MB, costing about 3.2 million sats or $0.56 in total.
+A 3-of-5 shard deal of the same size makes 3,000 claims of about 1.06 MB, costing about 3.2 million sats ($0.56) at 1 sat per kB, or $56 at 100.
 
-Fees are negligible. The footprint is not: it is about 1% of the data's size, sitting in every miner's UTXO set for years. Section 8 describes the fix.
+At 1 sat per kB the fees are negligible; at 100 they are not, as section 6.3 shows. The UTXO footprint is a problem at either rate: it is about 1% of the data's size, sitting in every miner's UTXO set for years. Section 8 describes the fix.
 
-### 6.3 Who pays what, when
+### 6.3 Fees against payments
+
+A claim proves m chunks. When chunks are as small as the 65,535-chunk limit allows, one claim carries about m/65,535 of everything the deal stores, so its fee grows with the file, as the operator's pay does. The fee's share of the pay therefore depends on the fee rate and the length of a period, not on the file's size. For 1 GiB at the cold tier, where a full-copy claim is 534 kB and a 3-of-5 shard claim is 446 kB:
+
+| Layout | Period | Pay per operator per period | Fee share at 1 sat/kB | Fee share at 100 sat/kB |
+|---|---|---|---|---|
+| Full copies, 3 operators | monthly | 22,373 sats | 2.4% | 239% |
+| Full copies, 3 operators | quarterly | 67,119 sats | 0.8% | 80% |
+| Full copies, 3 operators | yearly | 268,475 sats | 0.2% | 20% |
+| Shards, any 3 of 5 | monthly | 3,729 sats | 12% | 1,195% |
+| Shards, any 3 of 5 | quarterly | 11,186 sats | 4% | 398% |
+| Shards, any 3 of 5 | yearly | 44,746 sats | 1% | 100% |
+
+At 1 sat per kB the fee is a small cost at any period length. At 100 sats per kB a monthly claim costs more than a month's pay. Full copies need yearly periods to bring the fee down to a fifth of the pay, and shards do not cover their fees even yearly, because each shard operator stores a sixth as much as a full-copy operator but still proves 16 chunks of nearly the same size.
+
+Longer periods run into the cap of section 5.2: one period's payment for the whole deal must stay under the cost of forging one header. The larger the deal, the shorter the longest period the cap allows, and at that period the operator's pay is set by the cap whatever the storage price. So the fee's share at the longest allowed period grows with the deal's size:
+
+| Full-copy deal, cold tier | Longest period under the cap | Fee share at 1 sat/kB | Fee share at 100 sat/kB | At 100 sat/kB with m = 8 |
+|---|---|---|---|---|
+| 0.25 GiB | 73 months | 0.03% | 3% | 2% |
+| 1 GiB | 18 months | 0.13% | 13% | 7% |
+| 2 GiB | 9 months | 0.26% | 26% | 13% |
+| 4 GiB | 4.5 months | 0.52% | 52% | 26% |
+| 8 GiB | 2.3 months | 1.0% | 103% | 52% |
+| 16 GiB | 1.1 months | 2.1% | 206% | 103% |
+
+At GorillaPool's current rate, then, version 1 works for small archives with long periods and stops paying its way at a few GiB per deal. Four things move that limit:
+
+- **A miner taking 1 sat per kB.** Fees fall a hundredfold and stop mattering at any size the cap allows. Whether any mainnet miner takes that rate for these scripts is the first thing to establish (section 9).
+- **Fewer samples.** m = 8 halves every claim. With each period pinned to one height there is no free choice of header, so a 49% holder must forge about 300 headers to pass once, about $260 at the default floor (section 5.3), against at most $0.22 a period.
+- **A higher keep floor or a smaller safety factor.** At 1/16 of the difficulty the cap is four times larger, so periods can be four times longer, but claims stop if hashrate falls more than sixteenfold.
+- **A larger code.** A deal that could hold more than 65,535 chunks would have smaller chunks and smaller claims. Version 1 has no such code.
+
+Storage tier makes no difference at the limit: operators paid hot-storage prices earn more per month, but the cap then forces shorter periods, and their pay per period, and so the fee's share, ends up the same.
+
+### 6.4 Who pays what, when
 
 - The depositor pays everything at the start: the schedule, the repair reserve and the funding fees.
 - Each operator pays the fee on their own claims out of each period's value.
@@ -547,6 +584,8 @@ Every transaction paid GorillaPool's ARC rate of 100 sats per kB, 2,173 sats in 
 
 **Price risk.** Payments are fixed in satoshis at funding time. A falling BSV price cuts operators' real income, and a rising one means the depositor overpaid. Fixing this on-chain would need a price oracle, which brings back the trusted party this design avoids. Version 1 leaves it to the depositor to overfund, and to the steward to top up a deal if operators start leaving.
 
+**Fee rates.** Each claim pays its own fee, at whatever rate miners charge when it is made, out of a payment fixed in satoshis years earlier. A deal priced for 1 sat per kB becomes unprofitable for its operators if rates rise towards 100 (section 6.3). Version 1 cannot adjust payments after funding; depositors should price deals at the rate they can actually get, with margin.
+
 **The steward.** The steward is trusted not to front-run small payments (5.6) and needs to be online to repair a deal. If the steward disappears, operators keep claiming and the deal continues with whatever copies remain; only repair stops.
 
 **Miner policy.** Period scripts are non-standard. SV Node relays and mines non-standard outputs after Genesis according to its `-acceptnonstdoutputs` setting, and its defaults allow transactions up to 10 MB, scripts up to 500 kB and script numbers up to 10 kB. Proof of Keep stays inside those (scripts of 6.8 kB, numbers of at most 33 bytes, claims of at most 8.4 MB). GorillaPool's ARC policy on 11 November 2026 allowed transactions and scripts up to 100 MB, and the mainnet test's funding and claim were both mined (section 7.4). Claims near the 8.4 MB end, and TAAL's and Teranode's policies, are still to be confirmed.
@@ -562,11 +601,12 @@ Every transaction paid GorillaPool's ARC rate of 100 sats per kB, 2,173 sats in 
 ## 9. Next steps
 
 1. **Run the height-pinned script on mainnet** (section 7.4 ran draft 0.2's), and confirm that claims of up to 8.4 MB are accepted.
-2. **Agree the fit with bstore's maintainers:** Proof of Keep's period output as the `st` `0x04` output bstore reserves, built on bstore's existing proof profile 1 over an erasure-coded object, with bstore's index formula seeded by the pinned block. Operators then run as bstore providers, and the steward's watching becomes a bstore client, rather than separate software.
-3. **Run a mainnet pilot:** one public archive split into 3-of-5 shards, five operators with distinct identities, monthly periods, for twelve months, publishing every claim and every miss.
-4. **Build version 2,** the carry-forward covenant.
-5. **Propose the deal record and the period script template as a BRC,** jointly with bstore if its maintainers agree.
-6. **Research sealing** for independent copies.
+2. **Establish the fee rate these scripts can get on mainnet.** Ask TAAL and other miners whether they take 1 sat per kB for large non-standard transactions. Until then, price deals at 100 and use the longest periods the cap allows (section 6.3).
+3. **Agree the fit with bstore's maintainers:** Proof of Keep's period output as the `st` `0x04` output bstore reserves, built on bstore's existing proof profile 1 over an erasure-coded object, with bstore's index formula seeded by the pinned block. Operators then run as bstore providers, and the steward's watching becomes a bstore client, rather than separate software.
+4. **Run a mainnet pilot:** one public archive split into 3-of-5 shards, five operators with distinct identities, monthly periods, for twelve months, publishing every claim and every miss.
+5. **Build version 2,** the carry-forward covenant.
+6. **Propose the deal record and the period script template as a BRC,** jointly with bstore if its maintainers agree.
+7. **Research sealing** for independent copies.
 
 ---
 
@@ -599,7 +639,7 @@ Network figures are a snapshot and should be refreshed before any deal is priced
 | BSV price | $17.70 | CoinGecko, 29 October 2026 |
 | Block height, difficulty, hashrate | 973,175; 32.34 × 10⁹; 216.7 PH/s | WhatsOnChain, 29 October 2026 |
 | Block subsidy | 3.125 BSV, until block 1,050,000 | Protocol schedule |
-| Fee rate | 1 sat/kB | TAAL and GorillaPool since 2023; the SDK fetches the live rate from GorillaPool's ARC policy |
+| Fee rates | 1 and 100 sats per kB | 1: announced by TAAL and GorillaPool in 2023 (CoinGeek). 100: GorillaPool's ARC policy on 11 November 2026, which the mainnet test paid |
 | Cold storage | $0.00099 per GB-month | S3 Glacier Deep Archive list price |
 | Hot storage | $0.023 per GB-month | S3 Standard list price |
 | Erasure overhead, operators, margin | 2×, 3, 2× | Version 1 defaults |

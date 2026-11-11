@@ -57,7 +57,7 @@ Tested on Node 22. No native dependencies, so it should run unchanged in a Repli
 - `npm test` uses a stand-in parent transaction and exercises only the period scripts. The mainnet test is the real end to end.
 - Network figures in `src/economics.ts` are a 29 October 2026 snapshot. Refresh them before pricing a deal.
 - A claim through the keep path has been mined on mainnet, but only with the earlier, timestamp-based script; the height-pinned version has run in dry-run mode only. See sections 7.4 and 8 of the paper.
-- Fees follow the broadcaster's policy. GorillaPool's ARC charges 100 sats per kB; `src/economics.ts` still prices at 1 sat per kB.
+- Fees follow the broadcaster's policy. GorillaPool's ARC charges 100 sats per kB, at which a monthly claim costs more than a month's pay; `src/economics.ts` prices at both 1 and 100 sats per kB (paper section 6.3).
 
 ## Licence
 
