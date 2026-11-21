@@ -4,8 +4,8 @@
 //
 //   KEEP   (selector 1): the header of the block at the pinned height, proved by that block's
 //                        coinbase and its Merkle path, meeting the PoW floor; m chunks at the indices
-//                        that header selects, each with its Merkle path to the deal root; and the
-//                        operator's signature.
+//                        that header and the operator's key select, each with its Merkle path to the
+//                        deal root; and the operator's signature.
 //   LAPSE  (selector 0): a header with time >= lapseTime meeting the lapse floor, and the steward's
 //                        signature. Used to recover a period the operator failed to claim.
 //
@@ -114,14 +114,14 @@ const powCheck = (target: bigint): Chunk[] => [
   num(target), op(OP.OP_LESSTHAN), op(OP.OP_VERIFY)
 ]
 
-/** One sampled chunk: [.. sib_{d-1} .. sib_0 chunk] -> [..], with H(header) on the alt stack. */
+/** One sampled chunk: [.. sib_{d-1} .. sib_0 chunk] -> [..], with H(header) || root || operatorKey on the alt stack. */
 const challenge = (t: PeriodTerms, j: number): Chunk[] => {
   const out: Chunk[] = [
     // leaf = SHA256(0x00 || chunk)
     ZERO_BYTE, op(OP.OP_SWAP), op(OP.OP_CAT), op(OP.OP_SHA256),
-    // index = LE(SHA256(h || root || u32le(j))) mod N
+    // index = LE(SHA256(h || root || operatorKey || u32le(j))) mod N
     op(OP.OP_FROMALTSTACK), op(OP.OP_DUP), op(OP.OP_TOALTSTACK),
-    push(t.root), op(OP.OP_CAT), push(u32le(j)), op(OP.OP_CAT), op(OP.OP_SHA256),
+    push(u32le(j)), op(OP.OP_CAT), op(OP.OP_SHA256),
     ZERO_BYTE, op(OP.OP_CAT), op(OP.OP_BIN2NUM), num(t.chunkCount), op(OP.OP_MOD)
   ]
   for (let lvl = 0; lvl < t.depth; lvl++) {
@@ -143,7 +143,9 @@ const challenge = (t: PeriodTerms, j: number): Chunk[] => {
 export function periodLockingScript (t: PeriodTerms): LockingScript {
   const keep: Chunk[] = [
     ...pinnedHeader(t.height),
-    op(OP.OP_HASH256), ...powCheck(t.keepTarget), op(OP.OP_TOALTSTACK)
+    op(OP.OP_HASH256), ...powCheck(t.keepTarget),
+    // the seed prefix, built once: H(header) || root || operatorKey, kept on the alt stack
+    push(concat(t.root, t.operatorKey)), op(OP.OP_CAT), op(OP.OP_TOALTSTACK)
   ]
   for (let j = 0; j < t.samples; j++) keep.push(...challenge(t, j))
   keep.push(op(OP.OP_FROMALTSTACK), op(OP.OP_DROP), push(t.operatorKey), op(OP.OP_CHECKSIG))

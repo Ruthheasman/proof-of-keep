@@ -332,7 +332,7 @@ async function claim () {
   if (coinbaseHeight(block.coinbase) !== t.height) throw new Error(`The coinbase fetched for block ${t.height} does not record that height`)
   console.log(`Using block ${header.height} (${header.hash}), time ${when(header.time)}; coinbase path ${block.path.length} levels`)
 
-  const proofs: Proof[] = challengeIndices(header.bytes, tree.root, tree.count, t.samples)
+  const proofs: Proof[] = challengeIndices(header.bytes, tree.root, t.operatorKey, tree.count, t.samples)
     .map(i => ({ chunk: chunks[i], siblings: tree.path(i) }))
   const funding = Transaction.fromHex(s.funding!.hex)
   const out = funding.outputs[p.vout]

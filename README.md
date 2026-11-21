@@ -6,8 +6,8 @@ Reference prototype for the Proof of Keep white paper ([`proof-of-keep-whitepape
 
 ```
 npm install
-npm test                 # 34 checks through the SDK interpreter
-npm run mutate           # removes each script rule in turn; all 13 must be caught
+npm test                 # 38 checks through the SDK interpreter
+npm run mutate           # removes each script rule in turn; all 14 must be caught
 npm run economics        # every number in sections 5 and 6 of the paper
 ```
 
