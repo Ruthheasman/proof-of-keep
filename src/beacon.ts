@@ -22,12 +22,18 @@ export const headerMerkleRoot = (header: Bytes): Bytes => header.slice(36, 68)
 export const meetsTarget = (header: Bytes, target: bigint): boolean =>
   leToBigInt(headerHash(header)) < target
 
-/** seed_j = SHA256(H(header) || root || u32le(j)); index = LE(seed_j) mod N */
-export function challengeIndices (header: Bytes, root: Bytes, n: number, m: number): number[] {
-  const h = headerHash(header)
+/**
+ * seed_j = SHA256(H(header) || root || operatorKey || u32le(j)); index = LE(seed_j) mod N
+ *
+ * The operator's key is in the seed so that operators holding copies of the same root get
+ * different challenges from the same header. Without it, the first claim of a period would
+ * publish every other operator's answer.
+ */
+export function challengeIndices (header: Bytes, root: Bytes, operatorKey: Bytes, n: number, m: number): number[] {
+  const prefix = concat(headerHash(header), root, operatorKey)
   const out: number[] = []
   for (let j = 0; j < m; j++) {
-    const seed = sha256(concat(h, root, u32le(j)))
+    const seed = sha256(concat(prefix, u32le(j)))
     out.push(Number(leToBigInt(seed) % BigInt(n)))
   }
   return out
